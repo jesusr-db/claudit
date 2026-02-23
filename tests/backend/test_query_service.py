@@ -55,3 +55,11 @@ def test_build_error_stats_query(svc):
     query = svc.build_error_stats_query()
     assert "otel_logs" in query
     assert "api_error" in query
+
+
+def test_build_session_detail_query(svc):
+    query = svc.build_session_detail_query(session_id="996a6297")
+    assert "otel_logs" in query
+    assert "996a6297" in query
+    assert "GROUP BY" in query
+    assert "total_cost_usd" in query
