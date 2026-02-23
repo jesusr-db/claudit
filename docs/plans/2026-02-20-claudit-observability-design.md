@@ -112,7 +112,73 @@ Future (requires MCP server-side logs):
 - Server-side vs client-side duration comparison
 - MCP server error analysis (server-side failures vs client-side timeouts)
 
-### Backlog - Module 3: Inference Tables
+### Backlog - Module 3: Prompt Execution Graph
+
+Visualize the full execution tree triggered by a single user prompt using `prompt.id` correlation.
+
+**Core concept:** `prompt.id` ties every event back to the user prompt that triggered it:
+```
+user_prompt (prompt.id=X)
+  ├─ api_request #1 (model decision + tool planning)
+  ├─ tool_decision: Bash [accept]
+  ├─ tool_result: Bash (2.3s, success)
+  ├─ api_request #2 (process tool result, plan next)
+  ├─ tool_decision: Task/subagent [accept]
+  ├─ api_request #3 (subagent invocation)
+  ├─ tool_result: Task (598s, subagent complete)
+  ├─ api_request #4 (process subagent result)
+  ├─ tool_decision: Write [accept]
+  └─ tool_result: Write (12ms, success)
+```
+
+**Recommended visualization: Swim-lane timeline (horizontal)**
+- X-axis = time elapsed since prompt submitted
+- Swim lanes = event type (API calls, tools, subagents)
+- Bar width = duration of each event
+- Color = event type (teal=prompt, green=api, blue=tool, red=error)
+- Hover = full event details (model, tokens, cost, tool params)
+- This is better than Sankey because it preserves temporal ordering and shows parallelism/sequentiality
+
+**Alternative visualizations:**
+- **Flame graph**: Nested execution (prompt → api_request → tool chains), good for showing nesting depth
+- **Sankey diagram**: Flow from prompt → api_calls → tool_calls, good for showing volume/fan-out patterns across many prompts
+- **Gantt chart**: Similar to swim-lane but more traditional, shows overlapping durations
+
+**Data model:**
+```sql
+-- All events for a single prompt turn
+SELECT
+  attributes['event.name'] as event_name,
+  attributes['event.sequence'] as seq,
+  attributes['event.timestamp'] as ts,
+  attributes['tool_name'] as tool_name,
+  attributes['model'] as model,
+  attributes['duration_ms'] as duration_ms,
+  attributes['cost_usd'] as cost_usd,
+  attributes['input_tokens'] as input_tokens,
+  attributes['output_tokens'] as output_tokens,
+  attributes['success'] as success,
+  attributes['error'] as error
+FROM {catalog}.{schema}.otel_logs
+WHERE attributes['prompt.id'] = :prompt_id
+ORDER BY CAST(attributes['event.sequence'] AS INT)
+```
+
+**Key metrics per prompt turn:**
+- Total wall-clock time (first event to last event)
+- API call count and total token cost
+- Tool call count, success rate, and total tool duration
+- Subagent invocations (Task tool) and their duration
+- Fan-out ratio (how many events per prompt)
+
+**Views:**
+- `/sessions/:id/prompts/:promptId` - Single prompt execution graph
+- Prompt list within session timeline (clickable to drill into execution graph)
+- Aggregate prompt complexity stats (avg fan-out, avg duration by prompt type)
+
+**Frontend:** Recharts `ComposedChart` or custom SVG swim-lane component. Library candidates: `react-gantt-timeline`, `visx` (for custom swim lanes)
+
+### Backlog - Module 4: Inference Tables
 - `{endpoint}_payload_logs` from Databricks Model Serving
 - Full request/response payloads for LLM calls
 - Token-level cost verification against OTEL-reported costs
@@ -255,7 +321,9 @@ GET  /api/v1/mcp/servers                 # MCP server breakdown (Module 2)
 GET  /api/v1/mcp/servers/{name}/tools    # Tools for a specific MCP server
 GET  /api/v1/mcp/latency                 # MCP tool latency distributions
 GET  /api/v1/mcp/chains/{prompt_id}      # MCP tool call chain within a turn
-GET  /api/v1/inference/{session_id}      # Inference payloads (Module 3)
+GET  /api/v1/prompts/{prompt_id}         # Prompt execution graph (Module 3)
+GET  /api/v1/sessions/{id}/prompts       # All prompt turns in a session with fan-out stats
+GET  /api/v1/inference/{session_id}      # Inference payloads (Module 4)
 ```
 
 ### Response Examples
@@ -564,10 +632,11 @@ databricks bundle deploy -t prod
 |--------|-------|-------------|------------|
 | 1. Materialized Tables | (performance optimization) | ETL job | Scale > 10K events |
 | 2. MCP Tool Deep Dive | `/mcp` dashboard, per-server stats, latency/success/chains | OTEL logs (MVP data) | None - uses existing tool events |
-| 3. Inference Tables | `/inference` payloads | `{endpoint}_payload_logs` | Inference table enablement |
-| 4. System Tables | `/costs` infrastructure | `system.billing.*`, `system.serving.*` | System table access grants |
-| 5. User Correlation | `/users` dashboards | User mapping table | user.id -> email mapping |
-| 6. Alerts | `/alerts` configuration | Threshold rules | Modules 1-4 |
+| 3. Prompt Execution Graph | Swim-lane timeline per prompt turn, fan-out stats, subagent tracing | OTEL logs via `prompt.id` | None - uses existing events |
+| 4. Inference Tables | `/inference` payloads | `{endpoint}_payload_logs` | Inference table enablement |
+| 5. System Tables | `/costs` infrastructure | `system.billing.*`, `system.serving.*` | System table access grants |
+| 6. User Correlation | `/users` dashboards | User mapping table | user.id -> email mapping |
+| 7. Alerts | `/alerts` configuration | Threshold rules | Modules 1-5 |
 
 ## References
 
