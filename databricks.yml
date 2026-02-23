@@ -19,17 +19,16 @@ targets:
     mode: development
     default: true
     workspace:
-      host: ${DATABRICKS_HOST}
+      profile: DEFAULT
     variables:
       catalog: jmr_demo
       schema: zerobus
+      warehouse_id: 5067b513037fbf07
 
   prod:
     mode: production
     workspace:
-      host: ${DATABRICKS_HOST}
+      profile: DEFAULT
     variables:
       catalog: jmr_demo
       schema: zerobus
-    run_as:
-      service_principal_name: claudit-service-principal

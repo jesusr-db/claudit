@@ -15,7 +15,7 @@ resources:
         env:
           - name: CATALOG
             value: ${var.catalog}
-          - name: SCHEMA
+          - name: SCHEMA_NAME
             value: ${var.schema}
           - name: SQL_WAREHOUSE_ID
             value: ${var.warehouse_id}
