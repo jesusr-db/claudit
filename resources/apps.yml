@@ -1,0 +1,29 @@
+resources:
+  apps:
+    claudit_app:
+      name: claudit-observability
+      description: "Claude Code Observability Dashboard"
+      source_code_path: .
+      config:
+        command:
+          - uvicorn
+          - "backend.main:app"
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+        env:
+          - name: CATALOG
+            value: ${var.catalog}
+          - name: SCHEMA
+            value: ${var.schema}
+          - name: SQL_WAREHOUSE_ID
+            value: ${var.warehouse_id}
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+      permissions:
+        - user_name: ${workspace.current_user.userName}
+          level: CAN_MANAGE

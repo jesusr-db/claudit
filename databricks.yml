@@ -1,0 +1,35 @@
+bundle:
+  name: claudit-observability
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: "Unity Catalog containing OTEL tables"
+    default: jmr_demo
+  schema:
+    description: "Schema containing OTEL tables"
+    default: zerobus
+  warehouse_id:
+    description: "SQL Warehouse ID for app queries"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${DATABRICKS_HOST}
+    variables:
+      catalog: jmr_demo
+      schema: zerobus
+
+  prod:
+    mode: production
+    workspace:
+      host: ${DATABRICKS_HOST}
+    variables:
+      catalog: jmr_demo
+      schema: zerobus
+    run_as:
+      service_principal_name: claudit-service-principal
