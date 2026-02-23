@@ -1,10 +1,12 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_prefix="", case_sensitive=False)
+
     catalog: str = "jmr_demo"
     schema_name: str = "zerobus"  # 'schema' is reserved in Pydantic
-
     sql_warehouse_id: str = ""
 
     @property
@@ -14,10 +16,6 @@ class Settings(BaseSettings):
     @property
     def otel_metrics_table(self) -> str:
         return f"{self.catalog}.{self.schema_name}.otel_metrics"
-
-    class Config:
-        env_prefix = ""
-        case_sensitive = False
 
 
 settings = Settings()
