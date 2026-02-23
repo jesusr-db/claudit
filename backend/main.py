@@ -43,18 +43,25 @@ _candidates = [
 frontend_dist = None
 for path in _candidates:
     resolved = os.path.realpath(path)
-    logger.info(f"Checking frontend dist at: {resolved} exists={os.path.exists(resolved)}")
-    if os.path.exists(resolved):
+    exists = os.path.exists(resolved)
+    print(f"[CLAUDIT] Checking frontend dist at: {resolved} exists={exists}", flush=True)
+    if exists:
         frontend_dist = resolved
         break
 
 if frontend_dist:
-    logger.info(f"Mounting static files from: {frontend_dist}")
-    logger.info(f"Contents: {os.listdir(frontend_dist)}")
+    print(f"[CLAUDIT] Mounting static files from: {frontend_dist}", flush=True)
+    print(f"[CLAUDIT] Contents: {os.listdir(frontend_dist)}", flush=True)
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
 else:
-    logger.warning(f"No frontend dist found. CWD={os.getcwd()}, __file__={__file__}")
-    logger.warning(f"CWD contents: {os.listdir(os.getcwd())}")
+    print(f"[CLAUDIT] No frontend dist found. CWD={os.getcwd()}, __file__={__file__}", flush=True)
+    try:
+        print(f"[CLAUDIT] CWD contents: {os.listdir(os.getcwd())}", flush=True)
+        fe_path = os.path.join(os.getcwd(), "frontend")
+        if os.path.exists(fe_path):
+            print(f"[CLAUDIT] frontend/ contents: {os.listdir(fe_path)}", flush=True)
+    except Exception as e:
+        print(f"[CLAUDIT] Error listing dirs: {e}", flush=True)
 
     @app.get("/")
     async def root():
