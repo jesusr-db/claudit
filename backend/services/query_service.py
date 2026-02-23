@@ -1,0 +1,247 @@
+from typing import Optional, List
+
+
+class QueryService:
+    """Builds SQL queries against OTEL source tables directly."""
+
+    def __init__(self, catalog: str, schema: str):
+        self.catalog = catalog
+        self.schema = schema
+
+    @property
+    def logs_table(self) -> str:
+        return f"{self.catalog}.{self.schema}.otel_logs"
+
+    @property
+    def metrics_table(self) -> str:
+        return f"{self.catalog}.{self.schema}.otel_metrics"
+
+    def build_sessions_list_query(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        user_id: Optional[str] = None,
+    ) -> str:
+        conditions = []
+        if user_id:
+            conditions.append(f"attributes['user.id'] = '{user_id}'")
+
+        where = ""
+        if conditions:
+            where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                attributes['session.id'] as session_id,
+                attributes['user.id'] as user_id,
+                MIN(attributes['event.timestamp']) as start_time,
+                MAX(attributes['event.timestamp']) as end_time,
+                COUNT(*) as event_count,
+                COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
+                COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
+                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
+                SUM(CASE WHEN attributes['event.name'] = 'api_request'
+                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+            FROM {self.logs_table}
+            {where}
+            GROUP BY attributes['session.id'], attributes['user.id']
+            ORDER BY start_time DESC
+            LIMIT {limit}
+            OFFSET {offset}
+        """.strip()
+
+    def build_session_detail_query(self, session_id: str) -> str:
+        return f"""
+            SELECT
+                attributes['session.id'] as session_id,
+                attributes['user.id'] as user_id,
+                MIN(attributes['event.timestamp']) as start_time,
+                MAX(attributes['event.timestamp']) as end_time,
+                COUNT(*) as event_count,
+                COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
+                COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
+                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
+                SUM(CASE WHEN attributes['event.name'] = 'api_request'
+                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+            FROM {self.logs_table}
+            WHERE attributes['session.id'] = '{session_id}'
+            GROUP BY attributes['session.id'], attributes['user.id']
+        """.strip()
+
+    def build_session_timeline_query(
+        self,
+        session_id: str,
+        event_names: Optional[List[str]] = None,
+    ) -> str:
+        conditions = [f"attributes['session.id'] = '{session_id}'"]
+
+        if event_names:
+            names_str = ", ".join(f"'{n}'" for n in event_names)
+            conditions.append(f"attributes['event.name'] IN ({names_str})")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                attributes['event.name'] as event_name,
+                attributes['event.timestamp'] as timestamp,
+                CAST(attributes['event.sequence'] AS INT) as sequence,
+                attributes['session.id'] as session_id,
+                attributes['prompt.id'] as prompt_id,
+                attributes['user.id'] as user_id,
+                attributes['tool_name'] as tool_name,
+                attributes['model'] as model,
+                attributes['duration_ms'] as duration_ms,
+                attributes['cost_usd'] as cost_usd,
+                attributes['input_tokens'] as input_tokens,
+                attributes['output_tokens'] as output_tokens,
+                attributes['cache_read_tokens'] as cache_read_tokens,
+                attributes['cache_creation_tokens'] as cache_creation_tokens,
+                attributes['error'] as error,
+                attributes['status_code'] as status_code,
+                attributes['success'] as success,
+                attributes['decision'] as decision,
+                attributes['source'] as source,
+                attributes['prompt'] as prompt,
+                attributes['prompt_length'] as prompt_length,
+                attributes['tool_result_size_bytes'] as tool_result_size_bytes,
+                attributes['speed'] as speed
+            FROM {self.logs_table}
+            {where}
+            ORDER BY CAST(attributes['event.sequence'] AS INT) ASC
+        """.strip()
+
+    def build_token_usage_query(
+        self,
+        session_id: Optional[str] = None,
+    ) -> str:
+        conditions = ["name = 'claude_code.token.usage'"]
+        if session_id:
+            conditions.append(f"sum.attributes['session.id'] = '{session_id}'")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                sum.attributes['session.id'] as session_id,
+                sum.attributes['model'] as model,
+                sum.attributes['type'] as token_type,
+                sum.value as value,
+                sum.start_time_unix_nano,
+                sum.time_unix_nano
+            FROM {self.metrics_table}
+            {where}
+            ORDER BY sum.time_unix_nano DESC
+        """.strip()
+
+    def build_cost_usage_query(
+        self,
+        session_id: Optional[str] = None,
+    ) -> str:
+        conditions = ["name = 'claude_code.cost.usage'"]
+        if session_id:
+            conditions.append(f"sum.attributes['session.id'] = '{session_id}'")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                sum.attributes['session.id'] as session_id,
+                sum.attributes['model'] as model,
+                sum.value as cost_usd,
+                sum.start_time_unix_nano,
+                sum.time_unix_nano
+            FROM {self.metrics_table}
+            {where}
+            ORDER BY sum.time_unix_nano DESC
+        """.strip()
+
+    def build_tool_stats_query(
+        self,
+        session_id: Optional[str] = None,
+        mcp_only: bool = False,
+    ) -> str:
+        conditions = ["attributes['event.name'] = 'tool_result'"]
+        if session_id:
+            conditions.append(f"attributes['session.id'] = '{session_id}'")
+        if mcp_only:
+            conditions.append("attributes['tool_name'] LIKE 'mcp__%'")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                attributes['tool_name'] as tool_name,
+                COUNT(*) as call_count,
+                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms,
+                SUM(CASE WHEN attributes['success'] = 'true' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN attributes['success'] = 'false' THEN 1 ELSE 0 END) as failure_count,
+                SUM(CAST(attributes['tool_result_size_bytes'] AS BIGINT)) as total_result_bytes
+            FROM {self.logs_table}
+            {where}
+            GROUP BY attributes['tool_name']
+            ORDER BY call_count DESC
+        """.strip()
+
+    def build_error_stats_query(
+        self,
+        session_id: Optional[str] = None,
+    ) -> str:
+        conditions = ["attributes['event.name'] = 'api_error'"]
+        if session_id:
+            conditions.append(f"attributes['session.id'] = '{session_id}'")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                attributes['model'] as model,
+                attributes['status_code'] as status_code,
+                attributes['error'] as error,
+                COUNT(*) as error_count,
+                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms
+            FROM {self.logs_table}
+            {where}
+            GROUP BY attributes['model'], attributes['status_code'], attributes['error']
+            ORDER BY error_count DESC
+        """.strip()
+
+    def build_api_performance_query(
+        self,
+        session_id: Optional[str] = None,
+    ) -> str:
+        conditions = ["attributes['event.name'] = 'api_request'"]
+        if session_id:
+            conditions.append(f"attributes['session.id'] = '{session_id}'")
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        return f"""
+            SELECT
+                attributes['model'] as model,
+                COUNT(*) as request_count,
+                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms,
+                PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.5) as p50_duration_ms,
+                PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.95) as p95_duration_ms,
+                SUM(CAST(attributes['input_tokens'] AS BIGINT)) as total_input_tokens,
+                SUM(CAST(attributes['output_tokens'] AS BIGINT)) as total_output_tokens,
+                SUM(CAST(attributes['cache_read_tokens'] AS BIGINT)) as total_cache_read_tokens,
+                SUM(CAST(attributes['cost_usd'] AS DOUBLE)) as total_cost_usd
+            FROM {self.logs_table}
+            {where}
+            GROUP BY attributes['model']
+        """.strip()
+
+    def build_summary_query(self) -> str:
+        return f"""
+            SELECT
+                COUNT(DISTINCT attributes['session.id']) as total_sessions,
+                COUNT(DISTINCT attributes['user.id']) as total_users,
+                COUNT(*) as total_events,
+                COUNT(CASE WHEN attributes['event.name'] = 'user_prompt' THEN 1 END) as total_prompts,
+                COUNT(CASE WHEN attributes['event.name'] = 'api_request' THEN 1 END) as total_api_calls,
+                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as total_errors,
+                SUM(CASE WHEN attributes['event.name'] = 'api_request'
+                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+            FROM {self.logs_table}
+        """.strip()
