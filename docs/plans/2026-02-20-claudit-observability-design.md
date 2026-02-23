@@ -94,11 +94,23 @@ When data volume grows beyond direct-query performance:
 - Session summary table
 - Aggregated daily metrics table
 
-### Backlog - Module 2: MCP Server Logs
+### Backlog - Module 2: MCP Tool Deep Dive
+Enhanced visibility and granularity for MCP tool calls from OTEL data:
+- Dedicated `/mcp` dashboard view with MCP-only tool stats
+- Per-MCP-server breakdown (parse server name from `tool_name` prefix e.g. `mcp__slack__*`)
+- MCP tool call latency distributions (p50/p95/p99 from `tool_result.duration_ms`)
+- MCP tool success/failure rates per server and per tool
+- MCP tool result size analysis (`tool_result_size_bytes`)
+- MCP tool call frequency heatmap (time-of-day / day-of-week)
+- MCP tool call chains (sequence of MCP calls within a prompt turn via `prompt.id`)
+- Session-level MCP usage summary (which servers used, call counts, total duration)
+- Top MCP tools by cost impact (correlate MCP tool calls with surrounding `api_request` token usage)
+
+Future (requires MCP server-side logs):
 - Separate Unity Catalog table for MCP server-side logs
 - Correlate with OTEL tool events via timestamp + tool name
-- MCP-specific latency and error analysis
 - Server-side vs client-side duration comparison
+- MCP server error analysis (server-side failures vs client-side timeouts)
 
 ### Backlog - Module 3: Inference Tables
 - `{endpoint}_payload_logs` from Databricks Model Serving
@@ -239,7 +251,10 @@ GET  /api/v1/sessions/{id}/timeline  # Chronological event stream
 GET  /api/v1/sessions/{id}/events/{seq}  # Event detail by sequence
 GET  /api/v1/users                       # User list (requires user mapping)
 GET  /api/v1/users/{id}/summary          # User summary
-GET  /api/v1/mcp/servers                 # MCP server stats (Module 2)
+GET  /api/v1/mcp/servers                 # MCP server breakdown (Module 2)
+GET  /api/v1/mcp/servers/{name}/tools    # Tools for a specific MCP server
+GET  /api/v1/mcp/latency                 # MCP tool latency distributions
+GET  /api/v1/mcp/chains/{prompt_id}      # MCP tool call chain within a turn
 GET  /api/v1/inference/{session_id}      # Inference payloads (Module 3)
 ```
 
@@ -548,7 +563,7 @@ databricks bundle deploy -t prod
 | Module | Views | Data Source | Dependency |
 |--------|-------|-------------|------------|
 | 1. Materialized Tables | (performance optimization) | ETL job | Scale > 10K events |
-| 2. MCP Server Logs | `/mcp` deep dive | Separate UC table | MCP log ingestion pipeline |
+| 2. MCP Tool Deep Dive | `/mcp` dashboard, per-server stats, latency/success/chains | OTEL logs (MVP data) | None - uses existing tool events |
 | 3. Inference Tables | `/inference` payloads | `{endpoint}_payload_logs` | Inference table enablement |
 | 4. System Tables | `/costs` infrastructure | `system.billing.*`, `system.serving.*` | System table access grants |
 | 5. User Correlation | `/users` dashboards | User mapping table | user.id -> email mapping |
