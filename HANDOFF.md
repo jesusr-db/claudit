@@ -1,141 +1,126 @@
 # Claudit Project Handoff
 
-**Date:** 2026-02-20
-**Updated:** 2026-02-23 (aligned plans with actual OTEL telemetry data)
-**Status:** Design complete, ready for implementation
+**Date:** 2026-02-23
+**Status:** MVP deployed and running on Databricks Apps
+**Branch:** `feature/claudit-mvp` (worktree at `.worktrees/claudit-mvp`)
 
 ---
 
-## Project Overview
+## Current State
 
-**Claudit** is an observability app for Claude Code clients. It queries OTEL logs and metrics tables directly to provide analytics dashboards and session-level visibility. Modular backlog extensions add MCP server logs, inference tables, and system table integration.
+**App is LIVE:** https://claudit-observability-1351565862180944.aws.databricksapps.com
 
-## What Was Completed
+The MVP is deployed and functional. Dashboard, sessions list, and session timeline views are all working. 34 tests passing (21 backend, 13 frontend). All API endpoints returning 200.
 
-### 1. Design Phase (Approved)
-- Brainstormed requirements with user
-- Evaluated architectural approaches
-- Selected: Direct query on OTEL tables (MVP), materialization when scale requires it
-- Design document: `docs/plans/2026-02-20-claudit-observability-design.md`
+## Critical Next Steps (Priority Order)
 
-### 2. Data Validation (2026-02-23)
-- Verified actual Claude Code OTEL telemetry against planned schema
-- Identified 6 major misalignments between plan and actual data
-- Updated design and implementation plans to match real data
+### 1. Clean up debug logging in backend/main.py
+**Why:** `print()` statements for frontend dist path discovery are still in production code.
+**What:** Remove the `_candidates` loop, `print(f"[CLAUDIT]...")` lines, and the fallback `root()` endpoint. Replace with the simple original pattern now that we know the correct path:
+```python
+frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
+```
+**File:** `backend/main.py`
 
-### 3. Implementation Plan (Ready)
-- Simplified from 18 tasks to ~12 focused tasks across 4 MVP phases + backlog
-- Removed ETL/materialization from MVP scope
-- All SQL queries validated against actual table structure
-- Plan document: `docs/plans/2026-02-20-claudit-implementation.md`
+### 2. Remove unused imports and dead code
+**Why:** `backend/main.py` has `HTMLResponse`, `logging` imports only used by debug code.
+**File:** `backend/main.py`
 
-## Key Design Decisions
+### 3. Add Recharts visualizations to dashboard
+**Why:** Design doc specifies charts (TokenUsageChart, CostBreakdown, ErrorRateChart, LatencyDistribution) but MVP only has tables and stat cards.
+**What:** Add time-series charts using Recharts (already in package.json dependencies). Needs new API hooks for `/api/v1/metrics/usage`, `/api/v1/metrics/costs`, `/api/v1/metrics/performance`.
+**Files:** `frontend/src/views/dashboard/components/` (new chart components)
 
-| Decision | Choice |
-|----------|--------|
-| Architecture | Direct query on OTEL tables (MVP), materialization in backlog |
-| Source tables | `{catalog}.{schema}.otel_logs` + `otel_metrics` (NOT mlflow-prefixed) |
-| Data freshness | Near real-time (OTEL export: 5-10s) |
-| Session correlation | `attributes['session.id']` in logs (NOT spans) |
-| User identity | `user.id` is SHA256 hash (no email without mapping) |
-| Auth | Databricks native OAuth via Apps |
-| Frontend | React 18 + Chakra UI + TanStack Query |
-| Deployment | DAB bundle (app only for MVP, + ETL job in backlog) |
-| Primary views | Analytics dashboard + Session timeline (both MVP) |
+### 4. Add proper error handling and loading states
+**Why:** Current error handling is minimal (just `<Text color="red.500">Failed to load</Text>`). No retry buttons, no empty states with suggestions.
+**What:** Add toast notifications on API errors, retry buttons, and meaningful empty states per the design doc error handling table.
 
-## Verified Data Model
+### 5. Merge feature branch to main
+**Why:** All work is on `feature/claudit-mvp`. Main branch only has design docs.
+**What:** `git checkout main && git merge feature/claudit-mvp`
 
-### otel_logs events (5 types)
-| event.name | Key fields |
-|---|---|
-| `user_prompt` | prompt, prompt_length, prompt.id |
-| `api_request` | model, duration_ms, cost_usd, input/output/cache tokens |
-| `api_error` | model, error, status_code, duration_ms |
-| `tool_decision` | tool_name, decision, source |
-| `tool_result` | tool_name, duration_ms, success, tool_result_size_bytes |
+## Known Issues
 
-Common: `session.id`, `prompt.id`, `event.sequence`, `event.timestamp`, `user.id`
+### OTEL telemetry limitations discovered this session
+- **`tool_parameters` is always null** - cannot identify which specific Skill was invoked (e.g., `"superpowers:executing-plans"`) or which Task subagent type was used (e.g., `"Explore"`)
+- **MCP tools are generic** - all logged as `tool_name: "mcp_tool"`, not the specific MCP tool name like `mcp__slack__slack_read_api_call`
+- **No skill/subagent identity** in telemetry at all
 
-### otel_metrics (4 counters)
-| Metric | Unit | Breakdown |
-|---|---|---|
-| `claude_code.token.usage` | tokens | type (input/output/cacheRead/cacheCreation), model |
-| `claude_code.cost.usage` | USD | model |
-| `claude_code.active_time.total` | s | - |
-| `claude_code.session.count` | count | - |
+### Deployment lessons learned
+These are documented in commits but worth knowing:
+1. **Workspace host** - `databricks.yml` cannot use `${DATABRICKS_HOST}` variable interpolation for `workspace.host`. Use `profile: DEFAULT` instead.
+2. **Env vars** - DAB `resources/apps.yml` `config.env` block does NOT set runtime env vars. Must use `app.yaml` `env` section.
+3. **Frontend dist** - `.gitignore` patterns are respected by `databricks bundle deploy` sync. Had to remove `dist/` and `frontend/dist/` from `.gitignore` and force-add built files.
+4. **Root package.json** - Databricks Apps build system picks up root `package.json` before `frontend/package.json`. Removed root copy to avoid stale build scripts.
+5. **tsc in Apps** - TypeScript 5.9.x in the Apps build environment requires `tsc -b` for projects with `references`. Simplified build to just `vite build`.
 
-### What does NOT exist
-- **otel_spans**: Table exists but is always empty. Claude Code does not emit spans.
-- **trace_id / span_id**: Always null in logs.
-- **severity_text / severity_number**: Always null.
-- **user email**: Only hashed `user.id` available.
+## Backlog Roadmap (updated this session)
 
-## MVP Scope
+| # | Module | Dependency | Notes |
+|---|--------|-----------|-------|
+| 1 | Materialized Tables | Scale > 10K events | ETL job for daily rollups |
+| 2 | **MCP Tool Deep Dive** | **None** | Per-server breakdown, latency p50/p95/p99, success rates, call chains. All from existing OTEL data |
+| 3 | **Prompt Execution Graph** | **None** | Swim-lane timeline per `prompt.id`. Shows full execution tree: prompt -> API calls -> tool calls -> subagents. Uses existing OTEL data |
+| 4 | Inference Tables | Table enablement | LLM request/response payloads |
+| 5 | System Tables | Access grants | Billing, serving metrics |
+| 6 | User Correlation | Mapping table | user.id hash -> email |
+| 7 | Alerts | Modules 1-5 | Threshold rules |
 
-- Analytics dashboard (summary, tools, errors, performance, costs)
-- Session list with aggregated stats
-- Session timeline with event-level detail
-- MCP tool filtering (via `tool_name LIKE 'mcp__%'`)
-- No ETL, no materialized tables, no cross-table joins
+**Modules 2 and 3 have zero dependencies** - best candidates for next sprint.
 
-## Backlog Modules
-
-| Module | Description | Trigger |
-|--------|-------------|---------|
-| 1. Materialized Tables | ETL job for pre-computed rollups | Scale > 10K events |
-| 2. MCP Server Logs | Server-side MCP log correlation | MCP log ingestion pipeline |
-| 3. Inference Tables | LLM request/response payloads | Inference table enablement |
-| 4. System Tables | Billing and serving infrastructure metrics | System table access |
-| 5. User Correlation | Map user.id hash to emails | User mapping table |
-
-## Project Structure (Planned)
+## Project Structure
 
 ```
-claudit/
-├── databricks.yml          # DAB bundle config
-├── app.yaml                # App config
-├── pyproject.toml          # Python deps
-├── package.json            # Frontend deps
-├── backend/                # FastAPI backend
-│   ├── main.py
-│   ├── config.py
-│   ├── models/
-│   ├── services/
-│   └── routers/
-├── frontend/               # React frontend
+claudit/.worktrees/claudit-mvp/
+├── databricks.yml              # DAB bundle (profile: DEFAULT, warehouse: 5067b513037fbf07)
+├── app.yaml                    # Runtime config with env vars (CATALOG, SCHEMA_NAME, SQL_WAREHOUSE_ID)
+├── requirements.txt            # Python deps for Databricks Apps
+├── pyproject.toml              # Python project config
+├── backend/
+│   ├── main.py                 # FastAPI app + static file serving
+│   ├── config.py               # Settings (pydantic-settings, reads env vars)
+│   ├── models/                 # events.py, sessions.py, metrics.py
+│   ├── services/               # query_service.py (9 query builders), sql_executor.py
+│   └── routers/                # metrics.py (6 endpoints), sessions.py (3 endpoints)
+├── frontend/
+│   ├── dist/                   # Built production bundle (committed, served by FastAPI)
 │   └── src/
-│       ├── app/
-│       ├── views/
-│       ├── shared/
-│       └── types/
-├── resources/              # DAB resource definitions
-│   └── apps.yml
-└── tests/
+│       ├── app/                # App.tsx, Layout.tsx, router/viewRegistry.ts
+│       ├── views/              # dashboard/, sessions/ (pages + components)
+│       ├── shared/hooks/       # useApi.ts (TanStack Query hooks)
+│       └── types/              # api.ts (TypeScript interfaces)
+├── resources/apps.yml          # DAB app resource definition
+└── tests/backend/              # 21 pytest tests
 ```
 
-## To Start Implementation
+## Key Commands
 
 ```bash
-# In this project directory
-claude
+# Work in the worktree
+cd .worktrees/claudit-mvp
 
-# Then run:
-/superpowers:executing-plans docs/plans/2026-02-20-claudit-implementation.md
+# Run tests
+python -m pytest tests/ -v                              # 21 backend tests
+cd frontend && npx vitest run                            # 13 frontend tests (must run from frontend/)
+
+# Build and deploy
+cd frontend && npx vite build && cd ..                   # Rebuild frontend
+databricks bundle validate -t dev                        # Validate bundle
+databricks bundle deploy -t dev                          # Upload to workspace
+databricks apps deploy claudit-observability \
+  --source-code-path /Workspace/Users/jesus.rodriguez@databricks.com/.bundle/claudit-observability/dev/files \
+  --profile DEFAULT                                      # Deploy app
+
+# Check app
+databricks apps logs claudit-observability --tail-lines 50 --profile DEFAULT
 ```
-
-## Prerequisites
-
-1. **Databricks workspace** with Unity Catalog enabled
-2. **SQL Warehouse ID**: `5067b513037fbf07` (Serverless Starter Warehouse)
-3. **OTEL tables**: `jmr_demo.zerobus.otel_logs`, `jmr_demo.zerobus.otel_metrics` (verified with data)
-4. **Databricks profile**: `DEFAULT` pointing to `fe-vm-vdm-classic-rikfy0.cloud.databricks.com`
 
 ## Git State
 
 ```
-Branch: main
-Commits:
-  1. df3b941 - Add claudit observability app design document
-  2. 8d04ff5 - docs: add claudit implementation plan
-  3. cbfb24d - docs: add handoff document for next session
+Branch: feature/claudit-mvp (24 commits ahead of main)
+Latest: 617c085 docs: add prompt execution graph to backlog (Module 3)
+All tests passing. App deployed and serving.
 ```
