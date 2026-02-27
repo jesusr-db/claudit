@@ -48,3 +48,12 @@ async def get_session_timeline(
     )
     rows = get_executor().execute(query)
     return {"session_id": session_id, "events": rows}
+
+
+@router.get("/{session_id}/prompts/{prompt_id}")
+async def get_prompt_events(session_id: str, prompt_id: str):
+    query = query_service.build_prompt_events_query(
+        session_id=session_id, prompt_id=prompt_id
+    )
+    rows = get_executor().execute(query)
+    return {"session_id": session_id, "prompt_id": prompt_id, "events": rows}

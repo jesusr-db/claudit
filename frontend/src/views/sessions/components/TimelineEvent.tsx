@@ -27,24 +27,33 @@ export function TimelineEventRow({ event }: Props) {
   const ts = new Date(event.timestamp).toLocaleTimeString();
 
   return (
-    <Box borderLeft="3px solid" borderColor={`${color}.400`} pl={4} py={2}>
+    <Box
+      borderLeft="3px solid"
+      borderColor={`${color}.400`}
+      pl={4}
+      py={2}
+      bg="surface.card"
+      borderRadius="0 10px 10px 0"
+      transition="all 0.15s ease"
+      _hover={{ bg: "soft.hover" }}
+    >
       <HStack spacing={3} mb={1}>
-        <Text fontSize="xs" color="gray.500" fontFamily="mono" minW="50px">
+        <Text fontSize="xs" color="gray.400" fontFamily="mono" minW="50px">
           #{event.sequence}
         </Text>
-        <Text fontSize="xs" color="gray.500">
+        <Text fontSize="xs" color="gray.400">
           {ts}
         </Text>
-        <Badge colorScheme={color} fontSize="xs">
+        <Badge colorScheme={color} variant="subtle" fontSize="xs">
           {icon} {event.event_name.toUpperCase()}
         </Badge>
         {event.model && (
-          <Badge variant="outline" fontSize="xs">
+          <Badge variant="subtle" colorScheme="gray" fontSize="xs">
             {event.model}
           </Badge>
         )}
         {event.tool_name && (
-          <Badge variant="outline" fontSize="xs">
+          <Badge variant="subtle" colorScheme="gray" fontSize="xs">
             {event.tool_name}
           </Badge>
         )}
@@ -52,15 +61,15 @@ export function TimelineEventRow({ event }: Props) {
 
       <VStack align="stretch" spacing={0} pl="62px" fontSize="sm">
         {event.event_name === "user_prompt" && event.prompt && (
-          <Text noOfLines={2} color="gray.700">
+          <Text noOfLines={2} color="gray.600">
             &quot;{event.prompt}&quot;
           </Text>
         )}
         {event.event_name === "api_request" && (
           <>
             <HStack spacing={4}>
-              <Text>Duration: {event.duration_ms}ms</Text>
-              <Text>Cost: ${event.cost_usd}</Text>
+              <Text color="gray.700">Duration: {event.duration_ms}ms</Text>
+              <Text color="gray.700">Cost: ${event.cost_usd}</Text>
             </HStack>
             <Text fontSize="xs" color="gray.500">
               Tokens: {event.input_tokens} in / {event.output_tokens} out /{" "}
@@ -74,20 +83,20 @@ export function TimelineEventRow({ event }: Props) {
           </Text>
         )}
         {event.event_name === "tool_decision" && (
-          <Text>
+          <Text color="gray.600">
             {event.decision} via {event.source}
           </Text>
         )}
         {event.event_name === "tool_result" && (
           <HStack spacing={4}>
-            <Text>
+            <Text color="gray.700">
               Duration: {event.duration_ms}ms
             </Text>
-            <Badge colorScheme={event.success === "true" ? "green" : "red"}>
+            <Badge colorScheme={event.success === "true" ? "green" : "red"} variant="subtle">
               {event.success === "true" ? "success" : "failed"}
             </Badge>
             {event.tool_result_size_bytes && (
-              <Text fontSize="xs">{event.tool_result_size_bytes} bytes</Text>
+              <Text fontSize="xs" color="gray.500">{event.tool_result_size_bytes} bytes</Text>
             )}
           </HStack>
         )}

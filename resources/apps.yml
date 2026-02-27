@@ -3,7 +3,7 @@ resources:
     claudit_app:
       name: claudit-observability
       description: "Claude Code Observability Dashboard"
-      source_code_path: .
+      source_code_path: ../
       config:
         command:
           - uvicorn

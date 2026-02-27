@@ -9,6 +9,15 @@ const SessionsPage = lazy(
 const SessionDetailPage = lazy(
   () => import("@/views/sessions/SessionDetailPage")
 );
+const McpToolsPage = lazy(
+  () => import("@/views/mcp-tools/McpToolsPage")
+);
+const McpServerDetailPage = lazy(
+  () => import("@/views/mcp-tools/McpServerDetailPage")
+);
+const PlatformPage = lazy(
+  () => import("@/views/platform/PlatformPage")
+);
 
 export interface ViewEntry {
   id: string;
@@ -38,5 +47,25 @@ export const viewRegistry: ViewEntry[] = [
     path: "/sessions/:id",
     component: SessionDetailPage,
     nav: false,
+  },
+  {
+    id: "mcp-tools",
+    path: "/mcp-tools",
+    component: McpToolsPage,
+    label: "MCP Tools",
+    nav: true,
+  },
+  {
+    id: "mcp-server-detail",
+    path: "/mcp-tools/:server",
+    component: McpServerDetailPage,
+    nav: false,
+  },
+  {
+    id: "platform",
+    path: "/platform",
+    component: PlatformPage,
+    label: "Platform",
+    nav: true,
   },
 ];

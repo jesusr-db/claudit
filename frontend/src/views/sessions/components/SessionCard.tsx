@@ -4,63 +4,66 @@ import {
   HStack,
   VStack,
   Text,
-  Stat,
-  StatLabel,
-  StatNumber,
-  SimpleGrid,
+  Badge,
 } from "@chakra-ui/react";
-import { useNavigate } from "react-router-dom";
 import type { SessionSummary } from "@/types/api";
 
 interface Props {
   session: SessionSummary;
+  isExpanded?: boolean;
+  onClick?: () => void;
 }
 
-export function SessionCard({ session }: Props) {
-  const navigate = useNavigate();
+export function SessionCard({ session, isExpanded, onClick }: Props) {
+  const ts = new Date(session.start_time).toLocaleString();
+  const prompt = session.first_prompt || "No prompt recorded";
+  const errors = parseInt(session.errors);
+  const cost = parseFloat(session.total_cost_usd || "0");
 
   return (
     <Card
       cursor="pointer"
-      onClick={() => navigate(`/sessions/${session.session_id}`)}
-      _hover={{ shadow: "md" }}
-      size="sm"
+      onClick={onClick}
+      borderColor={isExpanded ? "brand.300" : undefined}
+      boxShadow={isExpanded ? "soft-md" : undefined}
+      _hover={{
+        boxShadow: "soft-md",
+        borderColor: "brand.200",
+        transform: isExpanded ? undefined : "translateY(-1px)",
+      }}
+      transition="all 0.2s ease"
     >
-      <CardBody>
+      <CardBody py={3} px={4}>
         <VStack align="stretch" spacing={2}>
           <HStack justify="space-between">
-            <Text fontFamily="mono" fontSize="sm" fontWeight="bold">
-              {session.session_id.slice(0, 8)}...
-            </Text>
-            <Text fontSize="xs" color="gray.500">
-              {new Date(session.start_time).toLocaleString()}
-            </Text>
+            <HStack spacing={2}>
+              <Text fontSize="xs" color="gray.400" fontWeight="500">
+                {ts}
+              </Text>
+              <Text fontSize="xs" color="gray.400">
+                {isExpanded ? "▼" : "▶"}
+              </Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Badge variant="subtle" colorScheme="blue" fontSize="xs">
+                {session.prompt_count} prompts
+              </Badge>
+              <Badge variant="subtle" colorScheme="gray" fontSize="xs">
+                {session.event_count} events
+              </Badge>
+              {errors > 0 && (
+                <Badge colorScheme="red" variant="subtle" fontSize="xs">
+                  {errors} errors
+                </Badge>
+              )}
+              <Badge variant="subtle" colorScheme="green" fontSize="xs">
+                ${cost.toFixed(2)}
+              </Badge>
+            </HStack>
           </HStack>
-          <SimpleGrid columns={4} spacing={2}>
-            <Stat size="sm">
-              <StatLabel>Events</StatLabel>
-              <StatNumber fontSize="md">{session.event_count}</StatNumber>
-            </Stat>
-            <Stat size="sm">
-              <StatLabel>Prompts</StatLabel>
-              <StatNumber fontSize="md">{session.prompt_count}</StatNumber>
-            </Stat>
-            <Stat size="sm">
-              <StatLabel>Cost</StatLabel>
-              <StatNumber fontSize="md">
-                ${parseFloat(session.total_cost_usd || "0").toFixed(2)}
-              </StatNumber>
-            </Stat>
-            <Stat size="sm">
-              <StatLabel>Errors</StatLabel>
-              <StatNumber
-                fontSize="md"
-                color={parseInt(session.errors) > 0 ? "red.500" : "green.500"}
-              >
-                {session.errors}
-              </StatNumber>
-            </Stat>
-          </SimpleGrid>
+          <Text fontSize="sm" noOfLines={isExpanded ? undefined : 2} color="gray.700" fontWeight="500">
+            {prompt}
+          </Text>
         </VStack>
       </CardBody>
     </Card>

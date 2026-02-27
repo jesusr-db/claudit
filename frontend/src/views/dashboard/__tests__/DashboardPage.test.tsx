@@ -19,22 +19,6 @@ vi.mock("@/shared/hooks/useApi", () => ({
     isLoading: false,
     error: null,
   }),
-  useToolStats: () => ({
-    data: {
-      tools: [
-        {
-          tool_name: "Bash",
-          call_count: "15",
-          avg_duration_ms: "2100.5",
-          success_count: "14",
-          failure_count: "1",
-          total_result_bytes: "15000",
-        },
-      ],
-    },
-    isLoading: false,
-    error: null,
-  }),
   useErrorStats: () => ({
     data: {
       errors: [
@@ -73,12 +57,6 @@ describe("DashboardPage", () => {
     renderWithProviders(<DashboardPage />);
     expect(screen.getByText("3")).toBeDefined(); // total_sessions
     expect(screen.getByText("$0.44")).toBeDefined(); // total_cost
-  });
-
-  it("renders tool usage table", () => {
-    renderWithProviders(<DashboardPage />);
-    expect(screen.getByText("Bash")).toBeDefined();
-    expect(screen.getByText("15")).toBeDefined(); // call_count
   });
 
   it("renders errors table", () => {

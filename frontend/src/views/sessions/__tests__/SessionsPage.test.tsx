@@ -17,8 +17,12 @@ vi.mock("@/shared/hooks/useApi", () => ({
           event_count: "111",
           prompt_count: "5",
           total_cost_usd: "0.44",
+          total_input_tokens: "85000",
+          total_output_tokens: "12000",
+          total_cache_read_tokens: "45000",
           tool_calls: "29",
           errors: "22",
+          first_prompt: "can you review OTEL log configuration",
         },
       ],
     },
@@ -44,14 +48,15 @@ describe("SessionsPage", () => {
     expect(screen.getByText("Sessions")).toBeDefined();
   });
 
-  it("renders session card with truncated id", () => {
+  it("renders session card with first prompt", () => {
     renderWithProviders(<SessionsPage />);
-    expect(screen.getByText("996a6297...")).toBeDefined();
+    expect(screen.getByText("can you review OTEL log configuration")).toBeDefined();
   });
 
-  it("renders session stats", () => {
+  it("renders session badges", () => {
     renderWithProviders(<SessionsPage />);
-    expect(screen.getByText("111")).toBeDefined();
+    expect(screen.getByText("5 prompts")).toBeDefined();
+    expect(screen.getByText("111 events")).toBeDefined();
     expect(screen.getByText("$0.44")).toBeDefined();
   });
 });

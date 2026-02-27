@@ -1,23 +1,28 @@
-import { Box, Heading, VStack } from "@chakra-ui/react";
+import { Box, Heading, VStack, Text } from "@chakra-ui/react";
 import { SummaryCards } from "./components/SummaryCards";
-import { ToolUsageTable } from "./components/ToolUsageTable";
 import { ErrorsTable } from "./components/ErrorsTable";
 
 export default function DashboardPage() {
   return (
-    <Box p={6}>
+    <Box p={8}>
       <VStack spacing={8} align="stretch">
-        <Heading size="lg">Analytics Dashboard</Heading>
-        <SummaryCards />
         <Box>
-          <Heading size="md" mb={4}>
-            Tool Usage
-          </Heading>
-          <ToolUsageTable />
+          <Heading size="lg" mb={1}>Analytics Dashboard</Heading>
+          <Text fontSize="sm" color="gray.500">
+            Claude Code usage overview and error insights
+          </Text>
         </Box>
-        <Box>
-          <Heading size="md" mb={4}>
-            Errors
+        <SummaryCards />
+        <Box
+          bg="surface.card"
+          borderRadius="soft-lg"
+          boxShadow="soft"
+          border="1px solid"
+          borderColor="soft.border"
+          p={6}
+        >
+          <Heading size="sm" mb={4} color="gray.700">
+            Recent Errors
           </Heading>
           <ErrorsTable />
         </Box>
