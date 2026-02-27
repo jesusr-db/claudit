@@ -8,6 +8,8 @@ class QueryService:
         self.catalog = catalog
         self.schema = schema
 
+    SERVICE_NAME = "claude-code"
+
     @property
     def logs_table(self) -> str:
         return f"{self.catalog}.{self.schema}.otel_logs"
@@ -16,19 +18,22 @@ class QueryService:
     def metrics_table(self) -> str:
         return f"{self.catalog}.{self.schema}.otel_metrics"
 
+    @property
+    def service_filter(self) -> str:
+        """Filter otel_logs rows to only the claude-code service."""
+        return f"resource.attributes['service.name'] = '{self.SERVICE_NAME}'"
+
     def build_sessions_list_query(
         self,
         limit: int = 50,
         offset: int = 0,
         user_id: Optional[str] = None,
     ) -> str:
-        conditions = []
+        conditions = [self.service_filter]
         if user_id:
             conditions.append(f"attributes['user.id'] = '{user_id}'")
 
-        where = ""
-        if conditions:
-            where = "WHERE " + " AND ".join(conditions)
+        where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             WITH session_stats AS (
@@ -75,7 +80,8 @@ class QueryService:
                 SUM(CASE WHEN attributes['event.name'] = 'api_request'
                     THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
             FROM {self.logs_table}
-            WHERE attributes['session.id'] = '{session_id}'
+            WHERE {self.service_filter}
+              AND attributes['session.id'] = '{session_id}'
             GROUP BY attributes['session.id'], attributes['user.id']
         """.strip()
 
@@ -84,7 +90,7 @@ class QueryService:
         session_id: str,
         event_names: Optional[List[str]] = None,
     ) -> str:
-        conditions = [f"attributes['session.id'] = '{session_id}'"]
+        conditions = [self.service_filter, f"attributes['session.id'] = '{session_id}'"]
 
         if event_names:
             names_str = ", ".join(f"'{n}'" for n in event_names)
@@ -147,7 +153,8 @@ class QueryService:
                 attributes['tool_result_size_bytes'] as tool_result_size_bytes,
                 attributes['tool_parameters'] as tool_parameters
             FROM {self.logs_table}
-            WHERE attributes['session.id'] = '{session_id}'
+            WHERE {self.service_filter}
+              AND attributes['session.id'] = '{session_id}'
               AND attributes['prompt.id'] = '{prompt_id}'
             ORDER BY CAST(attributes['event.sequence'] AS INT) ASC
         """.strip()
@@ -202,7 +209,7 @@ class QueryService:
         session_id: Optional[str] = None,
         mcp_only: bool = False,
     ) -> str:
-        conditions = ["attributes['event.name'] = 'tool_result'"]
+        conditions = [self.service_filter, "attributes['event.name'] = 'tool_result'"]
         if session_id:
             conditions.append(f"attributes['session.id'] = '{session_id}'")
         if mcp_only:
@@ -228,7 +235,7 @@ class QueryService:
         self,
         session_id: Optional[str] = None,
     ) -> str:
-        conditions = ["attributes['event.name'] = 'api_error'"]
+        conditions = [self.service_filter, "attributes['event.name'] = 'api_error'"]
         if session_id:
             conditions.append(f"attributes['session.id'] = '{session_id}'")
 
@@ -251,7 +258,7 @@ class QueryService:
         self,
         session_id: Optional[str] = None,
     ) -> str:
-        conditions = ["attributes['event.name'] = 'api_request'"]
+        conditions = [self.service_filter, "attributes['event.name'] = 'api_request'"]
         if session_id:
             conditions.append(f"attributes['session.id'] = '{session_id}'")
 
@@ -288,7 +295,8 @@ class QueryService:
                 ROUND(PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.99), 0) as p99_duration_ms,
                 SUM(CAST(attributes['tool_result_size_bytes'] AS BIGINT)) as total_result_bytes
             FROM {self.logs_table}
-            WHERE attributes['event.name'] = 'tool_result'
+            WHERE {self.service_filter}
+              AND attributes['event.name'] = 'tool_result'
             GROUP BY attributes['tool_name']
             ORDER BY call_count DESC
         """.strip()
@@ -305,7 +313,8 @@ class QueryService:
                 attributes['success'] as success,
                 attributes['tool_result_size_bytes'] as result_size_bytes
             FROM {self.logs_table}
-            WHERE attributes['event.name'] = 'tool_result'
+            WHERE {self.service_filter}
+              AND attributes['event.name'] = 'tool_result'
               AND attributes['tool_name'] = '{tool_name}'
             ORDER BY attributes['event.timestamp'] DESC
             LIMIT {limit}
@@ -455,4 +464,5 @@ class QueryService:
                 SUM(CASE WHEN attributes['event.name'] = 'api_request'
                     THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
             FROM {self.logs_table}
+            WHERE {self.service_filter}
         """.strip()

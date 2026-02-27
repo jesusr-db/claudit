@@ -20,7 +20,6 @@ import {
   Tooltip as RTooltip,
   ResponsiveContainer,
   Cell,
-  Legend,
 } from "recharts";
 import { useSessions, useSessionTimeline } from "@/shared/hooks/useApi";
 import { SessionCard } from "./components/SessionCard";
@@ -40,43 +39,65 @@ function dateKey(ts: string | null | undefined): string {
   return ts.slice(0, 10); // "YYYY-MM-DD"
 }
 
-interface DailyBucket {
+// Color palette for sessions
+const SESSION_COLORS = [
+  "#3B82F6", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444",
+  "#06B6D4", "#EC4899", "#14B8A6", "#F97316", "#6366F1",
+  "#84CC16", "#A855F7", "#22D3EE", "#FB923C", "#4ADE80",
+];
+
+/** Metadata for each unique session (color, label, short key for recharts) */
+interface SessionMeta {
+  sessionId: string;
+  key: string;       // short key like "s0", "s1" for recharts dataKey
+  label: string;
+  color: string;
+}
+
+/**
+ * Chart data row — ONLY primitive values.
+ * recharts iterates all properties, so no arrays/objects allowed.
+ * Shape: { date, displayDate, session_count, s0: 1234, s1: 5678, ... }
+ */
+interface ChartRow {
   date: string;
   displayDate: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
   session_count: number;
-  sessions: SessionSummary[];
+  [shortKey: string]: string | number;
 }
 
 /* ── custom tooltip ── */
-function ChartTooltip({ active, payload, label }: {
+function ChartTooltip({ active, payload, label, sessionMetaByKey }: {
   active?: boolean;
-  payload?: Array<{ value: number; name: string; color: string }>;
+  payload?: Array<{ value: number; name: string; color: string; dataKey: string }>;
   label?: string;
+  sessionMetaByKey?: Map<string, SessionMeta>;
 }) {
   if (!active || !payload?.length) return null;
-  const total = payload.reduce((s, p) => s + (p.value || 0), 0);
-  const sessionCount = (payload[0] as unknown as { payload: DailyBucket })?.payload?.session_count || 0;
+  const visible = payload.filter((p) => (p.value || 0) > 0);
+  if (!visible.length) return null;
+  const total = visible.reduce((s, p) => s + (p.value || 0), 0);
   return (
-    <Box bg="gray.800" color="white" px={3} py={2} borderRadius="8px" boxShadow="soft-md" fontSize="xs">
+    <Box bg="gray.800" color="white" px={3} py={2} borderRadius="8px" boxShadow="soft-md" fontSize="xs" maxW="300px">
       <Text fontWeight="600" mb={1}>{label}</Text>
-      {payload.map((p) => (
-        <HStack key={p.name} justify="space-between" spacing={4}>
-          <HStack spacing={1}>
-            <Box w="8px" h="8px" borderRadius="2px" bg={p.color} />
-            <Text>{p.name}</Text>
+      {visible.map((p) => {
+        const meta = sessionMetaByKey?.get(p.dataKey);
+        return (
+          <HStack key={p.dataKey} justify="space-between" spacing={4}>
+            <HStack spacing={1} minW={0} flex={1}>
+              <Box w="8px" h="8px" borderRadius="2px" bg={p.color} flexShrink={0} />
+              <Text noOfLines={1}>{meta?.label || p.name}</Text>
+            </HStack>
+            <Text fontFamily="mono" flexShrink={0}>{formatTokens(p.value)}</Text>
           </HStack>
-          <Text fontFamily="mono">{formatTokens(p.value)}</Text>
-        </HStack>
-      ))}
+        );
+      })}
       <Box borderTop="1px solid" borderColor="whiteAlpha.300" mt={1} pt={1}>
         <HStack justify="space-between">
           <Text>Total</Text>
           <Text fontWeight="600" fontFamily="mono">{formatTokens(total)}</Text>
         </HStack>
-        <Text color="whiteAlpha.600">{sessionCount} session{sessionCount !== 1 ? "s" : ""}</Text>
+        <Text color="whiteAlpha.600">{visible.length} session{visible.length !== 1 ? "s" : ""}</Text>
       </Box>
     </Box>
   );
@@ -102,47 +123,119 @@ export default function SessionsPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
 
-  console.log("[SessionsPage] render", { isLoading, error, data, sessionCount: data?.sessions?.length });
+  console.log("[SessionsPage] render", { isLoading, error, sessionCount: data?.sessions?.length });
 
   const sessions = data?.sessions || [];
 
-  // Aggregate sessions by date
-  const dailyBuckets = useMemo(() => {
-    const bucketMap = new Map<string, DailyBucket>();
+  // Build metadata for each unique session: short key, label, color
+  const sessionMetaList = useMemo<SessionMeta[]>(() => {
+    const seen = new Set<string>();
+    const list: SessionMeta[] = [];
+    for (const s of sessions) {
+      const sid = s.session_id || "";
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+      const idx = list.length;
+      let label: string;
+      if (s.first_prompt) {
+        label = s.first_prompt.length > 30 ? s.first_prompt.substring(0, 30) + "..." : s.first_prompt;
+      } else {
+        label = sid.substring(0, 8);
+      }
+      list.push({
+        sessionId: sid,
+        key: `s${idx}`,
+        label,
+        color: SESSION_COLORS[idx % SESSION_COLORS.length],
+      });
+    }
+    return list;
+  }, [sessions]);
+
+  // Lookup maps
+  const sessionMetaById = useMemo(() => {
+    const m = new Map<string, SessionMeta>();
+    for (const sm of sessionMetaList) m.set(sm.sessionId, sm);
+    return m;
+  }, [sessionMetaList]);
+
+  const sessionMetaByKey = useMemo(() => {
+    const m = new Map<string, SessionMeta>();
+    for (const sm of sessionMetaList) m.set(sm.key, sm);
+    return m;
+  }, [sessionMetaList]);
+
+  // Sessions grouped by date (for filtering — kept separate from chart data)
+  const sessionsByDate = useMemo(() => {
+    const m = new Map<string, SessionSummary[]>();
+    for (const s of sessions) {
+      const dk = dateKey(s.start_time);
+      if (!m.has(dk)) m.set(dk, []);
+      m.get(dk)!.push(s);
+    }
+    return m;
+  }, [sessions]);
+
+  // Chart data: one row per date, each session's tokens as a short-keyed property
+  const chartData = useMemo<ChartRow[]>(() => {
+    const rowMap = new Map<string, ChartRow>();
 
     for (const s of sessions) {
       const dk = dateKey(s.start_time);
-      if (!bucketMap.has(dk)) {
+      if (!rowMap.has(dk)) {
         const d = new Date(dk + "T00:00:00");
-        bucketMap.set(dk, {
+        rowMap.set(dk, {
           date: dk,
           displayDate: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          input_tokens: 0,
-          output_tokens: 0,
-          cache_read_tokens: 0,
           session_count: 0,
-          sessions: [],
         });
       }
-      const bucket = bucketMap.get(dk)!;
-      bucket.input_tokens += parseInt(s.total_input_tokens || "0", 10);
-      bucket.output_tokens += parseInt(s.total_output_tokens || "0", 10);
-      bucket.cache_read_tokens += parseInt(s.total_cache_read_tokens || "0", 10);
-      bucket.session_count++;
-      bucket.sessions.push(s);
+      const row = rowMap.get(dk)!;
+      const meta = sessionMetaById.get(s.session_id);
+      if (!meta) continue;
+
+      const totalTokens =
+        parseInt(s.total_input_tokens || "0", 10) +
+        parseInt(s.total_output_tokens || "0", 10) +
+        parseInt(s.total_cache_read_tokens || "0", 10);
+
+      row[meta.key] = ((row[meta.key] as number) || 0) + totalTokens;
+      row.session_count = (row.session_count as number) + 1;
     }
 
-    return Array.from(bucketMap.values()).sort((a, b) =>
-      a.date.localeCompare(b.date)
+    return Array.from(rowMap.values()).sort((a, b) =>
+      (a.date as string).localeCompare(b.date as string)
     );
-  }, [sessions]);
+  }, [sessions, sessionMetaById]);
 
   // Filter sessions based on selected date
   const filteredSessions = useMemo(() => {
     if (!selectedDate) return sessions;
-    const bucket = dailyBuckets.find((b) => b.date === selectedDate);
-    return bucket?.sessions || [];
-  }, [selectedDate, dailyBuckets, sessions]);
+    return sessionsByDate.get(selectedDate) || [];
+  }, [selectedDate, sessionsByDate, sessions]);
+
+  // Pre-build Bar elements — recharts needs stable children
+  const sessionBars = useMemo(() =>
+    sessionMetaList.map((meta) => (
+      <Bar
+        key={meta.key}
+        dataKey={meta.key}
+        name={meta.label}
+        stackId="sessions"
+        fill={meta.color}
+      >
+        {chartData.map((row) => (
+          <Cell
+            key={row.date as string}
+            fill={meta.color}
+            opacity={selectedDate && selectedDate !== row.date ? 0.3 : 1}
+            style={{ cursor: "pointer" }}
+          />
+        ))}
+      </Bar>
+    )),
+    [sessionMetaList, chartData, selectedDate]
+  );
 
   const handleBarClick = useCallback(
     (data: { date: string }) => {
@@ -172,7 +265,7 @@ export default function SessionsPage() {
 
       {!isLoading && sessions.length > 0 && (
         <VStack spacing={5} align="stretch">
-          {/* Token Time Chart */}
+          {/* Token Time Chart — stacked by session */}
           <Box
             bg="surface.card"
             borderRadius="soft-lg"
@@ -183,7 +276,7 @@ export default function SessionsPage() {
           >
             <HStack justify="space-between" mb={3}>
               <Text fontSize="sm" fontWeight="600" color="gray.700">
-                Token Usage by Day
+                Token Usage by Day (stacked by session)
               </Text>
               {selectedDate && (
                 <Button
@@ -196,14 +289,14 @@ export default function SessionsPage() {
                 </Button>
               )}
             </HStack>
-            <Box h="200px">
+            <Box h="220px">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={dailyBuckets}
+                  data={chartData}
                   onClick={(state) => {
-                    if (state?.activePayload?.[0]?.payload) {
-                      handleBarClick(state.activePayload[0].payload);
-                    }
+                    if (!state?.activePayload?.length) return;
+                    const row = state.activePayload[0].payload as ChartRow;
+                    handleBarClick({ date: row.date as string });
                   }}
                   style={{ cursor: "pointer" }}
                 >
@@ -221,57 +314,10 @@ export default function SessionsPage() {
                     tickFormatter={formatTokens}
                     width={50}
                   />
-                  <RTooltip content={<ChartTooltip />} />
-                  <Legend
-                    iconType="square"
-                    iconSize={8}
-                    wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
+                  <RTooltip
+                    content={<ChartTooltip sessionMetaByKey={sessionMetaByKey} />}
                   />
-                  <Bar
-                    dataKey="input_tokens"
-                    name="Input"
-                    stackId="tokens"
-                    radius={[0, 0, 0, 0]}
-                  >
-                    {dailyBuckets.map((entry) => (
-                      <Cell
-                        key={entry.date}
-                        fill={selectedDate === entry.date ? "#1D4ED8" : "#3B82F6"}
-                        opacity={selectedDate && selectedDate !== entry.date ? 0.35 : 1}
-                        style={{ cursor: "pointer" }}
-                      />
-                    ))}
-                  </Bar>
-                  <Bar
-                    dataKey="output_tokens"
-                    name="Output"
-                    stackId="tokens"
-                    radius={[0, 0, 0, 0]}
-                  >
-                    {dailyBuckets.map((entry) => (
-                      <Cell
-                        key={entry.date}
-                        fill={selectedDate === entry.date ? "#7C3AED" : "#A78BFA"}
-                        opacity={selectedDate && selectedDate !== entry.date ? 0.35 : 1}
-                        style={{ cursor: "pointer" }}
-                      />
-                    ))}
-                  </Bar>
-                  <Bar
-                    dataKey="cache_read_tokens"
-                    name="Cache Read"
-                    stackId="tokens"
-                    radius={[4, 4, 0, 0]}
-                  >
-                    {dailyBuckets.map((entry) => (
-                      <Cell
-                        key={entry.date}
-                        fill={selectedDate === entry.date ? "#059669" : "#34D399"}
-                        opacity={selectedDate && selectedDate !== entry.date ? 0.35 : 1}
-                        style={{ cursor: "pointer" }}
-                      />
-                    ))}
-                  </Bar>
+                  {sessionBars}
                 </BarChart>
               </ResponsiveContainer>
             </Box>
@@ -295,15 +341,16 @@ export default function SessionsPage() {
 
           {/* Session cards with inline timeline */}
           <VStack spacing={3} align="stretch">
-            {filteredSessions.map((s) => {
-              const isExpanded = expandedSession === s.session_id;
+            {filteredSessions.map((s, idx) => {
+              const sid = s.session_id || `unknown-${idx}`;
+              const isExpanded = expandedSession === sid;
               return (
-                <Box key={s.session_id}>
+                <Box key={sid}>
                   <SessionCard
                     session={s}
                     isExpanded={isExpanded}
                     onClick={() =>
-                      setExpandedSession(isExpanded ? null : s.session_id)
+                      setExpandedSession(isExpanded ? null : sid)
                     }
                   />
                   <Collapse in={isExpanded} animateOpacity>
@@ -318,8 +365,8 @@ export default function SessionsPage() {
                       borderRadius="0 0 14px 14px"
                       boxShadow="soft"
                     >
-                      {isExpanded && (
-                        <InlineTimeline sessionId={s.session_id} />
+                      {isExpanded && sid !== `unknown-${idx}` && (
+                        <InlineTimeline sessionId={sid} />
                       )}
                     </Box>
                   </Collapse>
