@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Query
 from backend.config import settings
 from backend.services.query_service import QueryService
@@ -16,8 +17,8 @@ def get_executor() -> SqlExecutor:
 
 
 @router.get("/performance")
-async def get_tool_performance():
-    query = query_service.build_tool_performance_query()
+async def get_tool_performance(days: Optional[float] = Query(None, ge=0.01, le=365)):
+    query = query_service.build_tool_performance_query(days=days)
     rows = get_executor().execute(query)
     return {"tools": rows}
 

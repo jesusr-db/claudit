@@ -9,22 +9,29 @@ import {
 } from "@chakra-ui/react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { viewRegistry } from "./router/viewRegistry";
+import TimeRangeSelector from "@/shared/components/TimeRangeSelector";
+import { useTimeRange } from "@/shared/context/TimeRangeContext";
 import {
   FiGrid,
   FiMessageSquare,
   FiCpu,
   FiBarChart2,
+  FiServer,
+  FiTrendingUp,
 } from "react-icons/fi";
 
 const NAV_ICONS: Record<string, React.ElementType> = {
+  "mcp-servers": FiServer,
   dashboard: FiGrid,
   sessions: FiMessageSquare,
   "mcp-tools": FiCpu,
+  kpis: FiTrendingUp,
   platform: FiBarChart2,
 };
 
 export function Layout() {
   const location = useLocation();
+  const { days, setDays } = useTimeRange();
   const navItems = viewRegistry.filter((v) => v.nav);
 
   return (
@@ -121,8 +128,16 @@ export function Layout() {
           })}
         </VStack>
 
+        {/* Global Time Range */}
+        <Box px={3} py={3} borderTop="1px solid" borderColor="soft.border">
+          <Text fontSize="10px" color="gray.400" fontWeight="500" mb={2} textTransform="uppercase" letterSpacing="wider">
+            Time Range
+          </Text>
+          <TimeRangeSelector value={days} onChange={setDays} />
+        </Box>
+
         {/* Footer */}
-        <Box px={3} pt={4} borderTop="1px solid" borderColor="soft.border">
+        <Box px={3} pt={3} borderTop="1px solid" borderColor="soft.border">
           <Text fontSize="10px" color="gray.400">
             Claude Code Observability
           </Text>

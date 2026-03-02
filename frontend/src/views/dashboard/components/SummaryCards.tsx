@@ -21,6 +21,7 @@ import {
   FiLayers,
 } from "react-icons/fi";
 import { useSummary } from "@/shared/hooks/useApi";
+import { useTimeRange } from "@/shared/context/TimeRangeContext";
 
 const CARD_ICONS: Record<string, { icon: React.ElementType; color: string; bg: string }> = {
   Sessions: { icon: FiLayers, color: "brand.600", bg: "brand.50" },
@@ -33,7 +34,8 @@ const CARD_ICONS: Record<string, { icon: React.ElementType; color: string; bg: s
 };
 
 export function SummaryCards() {
-  const { data, isLoading, error } = useSummary();
+  const { days } = useTimeRange();
+  const { data, isLoading, error } = useSummary(days);
 
   if (isLoading) return <Center py={8}><Spinner color="brand.500" /></Center>;
   if (error) return <Text color="red.500">Failed to load summary</Text>;

@@ -21,12 +21,32 @@ async def list_sessions(
     user_id: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_sessions_list_query(
-        limit=limit, offset=offset, user_id=user_id
+        limit=limit, offset=offset, user_id=user_id, days=days
     )
     rows = get_executor().execute(query)
     return {"sessions": rows}
+
+
+@router.get("/turnaround/summary")
+async def turnaround_summary():
+    query = query_service.build_turnaround_summary()
+    rows = get_executor().execute(query)
+    return rows[0] if rows else {}
+
+
+@router.get("/turnaround/detail")
+async def turnaround_detail(
+    session_id: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    query = query_service.build_turnaround_by_session(
+        session_id=session_id, limit=limit
+    )
+    rows = get_executor().execute(query)
+    return {"prompts": rows}
 
 
 @router.get("/{session_id}")

@@ -29,6 +29,21 @@ vi.mock("@/shared/hooks/useApi", () => ({
     isLoading: false,
     error: null,
   }),
+  useSessionTimeline: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+  useTurnaroundSummary: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+  useTurnaroundDetail: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 function renderWithProviders(ui: React.ReactElement) {

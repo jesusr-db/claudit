@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     catalog: str = "jmr_demo"
     schema_name: str = "zerobus"  # 'schema' is reserved in Pydantic
     sql_warehouse_id: str = ""
+    mcp_schema_name: str = "default"  # Schema for MCP server OTEL data
 
     @property
     def otel_logs_table(self) -> str:

@@ -23,15 +23,37 @@ class QueryService:
         """Filter otel_logs rows to only the claude-code service."""
         return f"resource.attributes['service.name'] = '{self.SERVICE_NAME}'"
 
+    @staticmethod
+    def _days_filter(days: Optional[float]) -> str:
+        """Return a SQL AND clause for time filtering, or empty string."""
+        if days is None:
+            return ""
+        if days < 1:
+            hours = max(int(days * 24), 1)
+            return f"AND CAST(attributes['event.timestamp'] AS TIMESTAMP) >= CURRENT_TIMESTAMP() - INTERVAL {hours} HOURS"
+        return f"AND attributes['event.timestamp'] >= DATE_SUB(current_date(), {int(days)})"
+
     def build_sessions_list_query(
         self,
         limit: int = 50,
         offset: int = 0,
         user_id: Optional[str] = None,
+        days: Optional[float] = None,
     ) -> str:
         conditions = [self.service_filter]
         if user_id:
             conditions.append(f"attributes['user.id'] = '{user_id}'")
+        if days is not None:
+            if days < 1:
+                hours = max(int(days * 24), 1)
+                conditions.append(
+                    f"CAST(attributes['event.timestamp'] AS TIMESTAMP) >= CURRENT_TIMESTAMP() - INTERVAL {hours} HOURS"
+                )
+            else:
+                int_days = int(days)
+                conditions.append(
+                    f"attributes['event.timestamp'] >= DATE_SUB(current_date(), {int_days})"
+                )
 
         where = "WHERE " + " AND ".join(conditions)
 
@@ -280,7 +302,7 @@ class QueryService:
             GROUP BY attributes['model']
         """.strip()
 
-    def build_tool_performance_query(self) -> str:
+    def build_tool_performance_query(self, days: Optional[float] = None) -> str:
         """All tools with latency percentiles and success rates."""
         return f"""
             SELECT
@@ -297,6 +319,7 @@ class QueryService:
             FROM {self.logs_table}
             WHERE {self.service_filter}
               AND attributes['event.name'] = 'tool_result'
+              {self._days_filter(days)}
             GROUP BY attributes['tool_name']
             ORDER BY call_count DESC
         """.strip()
@@ -391,8 +414,17 @@ class QueryService:
             ORDER BY query_date DESC
         """.strip()
 
-    def build_ai_gateway_model_stats_query(self, days: int = 7) -> str:
+    @staticmethod
+    def _ai_gw_time_filter(days: float) -> str:
+        """Time filter for system.ai_gateway.usage queries."""
+        if days < 1:
+            minutes = max(int(days * 24 * 60), 5)
+            return f"event_time >= CURRENT_TIMESTAMP() - INTERVAL {minutes} MINUTES"
+        return f"event_time >= current_date() - {int(days)}"
+
+    def build_ai_gateway_model_stats_query(self, days: float = 7) -> str:
         """Per-model performance from system.ai_gateway.usage."""
+        time_filter = self._ai_gw_time_filter(days)
         return f"""
             SELECT
                 destination_model as model,
@@ -411,31 +443,72 @@ class QueryService:
                 SUM(token_details.cache_read_input_tokens) as total_cache_read_tokens,
                 SUM(token_details.cache_creation_input_tokens) as total_cache_creation_tokens
             FROM system.ai_gateway.usage
-            WHERE event_time >= current_date() - {days}
+            WHERE {time_filter}
             GROUP BY destination_model, endpoint_name, api_type
             ORDER BY call_count DESC
         """.strip()
 
-    def build_ai_gateway_daily_query(self, days: int = 7) -> str:
-        """Daily AI Gateway volume and latency."""
-        return f"""
-            SELECT
-                DATE(event_time) as request_date,
-                COUNT(*) as total_requests,
-                SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as succeeded,
-                SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as failed,
-                ROUND(AVG(latency_ms), 0) as avg_latency_ms,
-                ROUND(AVG(time_to_first_byte_ms), 0) as avg_ttfb_ms,
-                ROUND(PERCENTILE(CAST(latency_ms AS DOUBLE), 0.95), 0) as p95_latency_ms,
-                SUM(total_tokens) as total_tokens
-            FROM system.ai_gateway.usage
-            WHERE event_time >= current_date() - {days}
-            GROUP BY DATE(event_time)
-            ORDER BY request_date DESC
-        """.strip()
+    def build_ai_gateway_daily_query(self, days: float = 7) -> str:
+        """Time-bucketed AI Gateway volume and latency."""
+        time_filter = self._ai_gw_time_filter(days)
+        if days < 1:
+            # 5-minute buckets
+            return f"""
+                SELECT
+                    CONCAT(
+                        DATE_FORMAT(event_time, 'yyyy-MM-dd HH:'),
+                        LPAD(CAST(FLOOR(MINUTE(event_time) / 5) * 5 AS STRING), 2, '0')
+                    ) as request_date,
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as succeeded,
+                    SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as failed,
+                    ROUND(AVG(latency_ms), 0) as avg_latency_ms,
+                    ROUND(AVG(time_to_first_byte_ms), 0) as avg_ttfb_ms,
+                    ROUND(PERCENTILE(CAST(latency_ms AS DOUBLE), 0.95), 0) as p95_latency_ms,
+                    SUM(total_tokens) as total_tokens
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                GROUP BY 1
+                ORDER BY request_date ASC
+            """.strip()
+        elif days <= 1:
+            # Hourly buckets
+            return f"""
+                SELECT
+                    DATE_FORMAT(event_time, 'yyyy-MM-dd HH:00') as request_date,
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as succeeded,
+                    SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as failed,
+                    ROUND(AVG(latency_ms), 0) as avg_latency_ms,
+                    ROUND(AVG(time_to_first_byte_ms), 0) as avg_ttfb_ms,
+                    ROUND(PERCENTILE(CAST(latency_ms AS DOUBLE), 0.95), 0) as p95_latency_ms,
+                    SUM(total_tokens) as total_tokens
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                GROUP BY DATE_FORMAT(event_time, 'yyyy-MM-dd HH:00')
+                ORDER BY request_date ASC
+            """.strip()
+        else:
+            # Daily buckets
+            return f"""
+                SELECT
+                    DATE(event_time) as request_date,
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as succeeded,
+                    SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as failed,
+                    ROUND(AVG(latency_ms), 0) as avg_latency_ms,
+                    ROUND(AVG(time_to_first_byte_ms), 0) as avg_ttfb_ms,
+                    ROUND(PERCENTILE(CAST(latency_ms AS DOUBLE), 0.95), 0) as p95_latency_ms,
+                    SUM(total_tokens) as total_tokens
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                GROUP BY DATE(event_time)
+                ORDER BY request_date DESC
+            """.strip()
 
-    def build_ai_gateway_errors_query(self, days: int = 7) -> str:
+    def build_ai_gateway_errors_query(self, days: float = 7) -> str:
         """AI Gateway errors by model and status code."""
+        time_filter = self._ai_gw_time_filter(days)
         return f"""
             SELECT
                 destination_model as model,
@@ -444,7 +517,7 @@ class QueryService:
                 COUNT(*) as error_count,
                 ROUND(AVG(latency_ms), 0) as avg_latency_ms
             FROM system.ai_gateway.usage
-            WHERE event_time >= current_date() - {days}
+            WHERE {time_filter}
               AND status_code != 200
             GROUP BY destination_model, endpoint_name, status_code
             ORDER BY error_count DESC
@@ -452,7 +525,105 @@ class QueryService:
 
     # ── OTEL Queries ──
 
-    def build_summary_query(self) -> str:
+    def build_turnaround_summary(self) -> str:
+        """Aggregate turnaround stats across all sessions."""
+        return f"""
+            WITH prompts AS (
+                SELECT
+                    attributes['session.id'] as session_id,
+                    attributes['prompt.id'] as prompt_id,
+                    attributes['event.timestamp'] as prompt_ts
+                FROM {self.logs_table}
+                WHERE {self.service_filter}
+                  AND attributes['event.name'] = 'user_prompt'
+            ),
+            prompt_events AS (
+                SELECT
+                    p.session_id,
+                    p.prompt_id,
+                    p.prompt_ts,
+                    COUNT(*) as events_in_prompt,
+                    COUNT(CASE WHEN l.attributes['event.name'] = 'api_request' THEN 1 END) as api_calls,
+                    COUNT(CASE WHEN l.attributes['event.name'] = 'tool_result' THEN 1 END) as tool_calls,
+                    MAX(l.attributes['event.timestamp']) as last_agent_event
+                FROM prompts p
+                LEFT JOIN {self.logs_table} l
+                    ON p.session_id = l.attributes['session.id']
+                    AND p.prompt_id = l.attributes['prompt.id']
+                    AND l.attributes['event.name'] != 'user_prompt'
+                    AND l.resource.attributes['service.name'] = '{self.SERVICE_NAME}'
+                GROUP BY p.session_id, p.prompt_id, p.prompt_ts
+            ),
+            with_durations AS (
+                SELECT *,
+                    ROUND((UNIX_TIMESTAMP(CAST(last_agent_event AS TIMESTAMP))
+                         - UNIX_TIMESTAMP(CAST(prompt_ts AS TIMESTAMP))), 0) as agent_work_sec
+                FROM prompt_events
+                WHERE last_agent_event IS NOT NULL
+            )
+            SELECT
+                COUNT(DISTINCT session_id) as total_sessions,
+                COUNT(*) as total_prompts,
+                ROUND(AVG(agent_work_sec), 1) as avg_turnaround_sec,
+                ROUND(PERCENTILE(agent_work_sec, 0.5), 1) as p50_turnaround_sec,
+                ROUND(PERCENTILE(agent_work_sec, 0.95), 1) as p95_turnaround_sec,
+                ROUND(MAX(agent_work_sec), 0) as max_turnaround_sec,
+                ROUND(AVG(api_calls), 1) as avg_api_calls,
+                ROUND(AVG(tool_calls), 1) as avg_tool_calls,
+                ROUND(AVG(events_in_prompt), 1) as avg_events_per_prompt
+            FROM with_durations
+        """.strip()
+
+    def build_turnaround_by_session(
+        self,
+        session_id: Optional[str] = None,
+        limit: int = 500,
+    ) -> str:
+        """Per-prompt turnaround data. Optional session_id filter."""
+        session_filter = (
+            f"AND attributes['session.id'] = '{session_id}'" if session_id else ""
+        )
+        return f"""
+            WITH prompts AS (
+                SELECT
+                    attributes['session.id'] as session_id,
+                    attributes['prompt.id'] as prompt_id,
+                    attributes['event.timestamp'] as prompt_ts,
+                    SUBSTRING(attributes['prompt'], 1, 80) as prompt_preview
+                FROM {self.logs_table}
+                WHERE {self.service_filter}
+                  AND attributes['event.name'] = 'user_prompt'
+                  {session_filter}
+            ),
+            prompt_events AS (
+                SELECT
+                    p.session_id,
+                    p.prompt_id,
+                    p.prompt_ts,
+                    p.prompt_preview,
+                    COUNT(*) as events_in_prompt,
+                    COUNT(CASE WHEN l.attributes['event.name'] = 'api_request' THEN 1 END) as api_calls,
+                    COUNT(CASE WHEN l.attributes['event.name'] = 'tool_result' THEN 1 END) as tool_calls,
+                    MAX(l.attributes['event.timestamp']) as last_agent_event,
+                    MAX(CASE WHEN l.attributes['tool_name'] = 'AskUserQuestion' THEN 1 ELSE 0 END) as has_question,
+                    MAX(CASE WHEN l.attributes['tool_name'] = 'ExitPlanMode' THEN 1 ELSE 0 END) as has_plan_exit
+                FROM prompts p
+                LEFT JOIN {self.logs_table} l
+                    ON p.session_id = l.attributes['session.id']
+                    AND p.prompt_id = l.attributes['prompt.id']
+                    AND l.attributes['event.name'] != 'user_prompt'
+                    AND l.resource.attributes['service.name'] = '{self.SERVICE_NAME}'
+                GROUP BY p.session_id, p.prompt_id, p.prompt_ts, p.prompt_preview
+            )
+            SELECT *,
+                ROUND((UNIX_TIMESTAMP(CAST(last_agent_event AS TIMESTAMP))
+                     - UNIX_TIMESTAMP(CAST(prompt_ts AS TIMESTAMP))), 0) as agent_work_sec
+            FROM prompt_events
+            ORDER BY prompt_ts DESC
+            LIMIT {limit}
+        """.strip()
+
+    def build_summary_query(self, days: Optional[float] = None) -> str:
         return f"""
             SELECT
                 COUNT(DISTINCT attributes['session.id']) as total_sessions,
@@ -465,4 +636,5 @@ class QueryService:
                     THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
             FROM {self.logs_table}
             WHERE {self.service_filter}
+              {self._days_filter(days)}
         """.strip()

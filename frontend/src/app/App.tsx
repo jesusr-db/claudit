@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Suspense, Component } from "react";
 import type { ReactNode, ErrorInfo } from "react";
 import { QueryProvider } from "./providers/QueryProvider";
+import { TimeRangeProvider } from "@/shared/context/TimeRangeContext";
 import { Layout } from "./Layout";
 import { viewRegistry } from "./router/viewRegistry";
 import { theme } from "./theme";
@@ -42,6 +43,7 @@ export default function App() {
   return (
     <ChakraProvider theme={theme}>
       <QueryProvider>
+        <TimeRangeProvider>
         <BrowserRouter>
           <ErrorBoundary>
             <Suspense
@@ -65,6 +67,7 @@ export default function App() {
             </Suspense>
           </ErrorBoundary>
         </BrowserRouter>
+        </TimeRangeProvider>
       </QueryProvider>
     </ChakraProvider>
   );

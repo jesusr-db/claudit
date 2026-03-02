@@ -16,6 +16,7 @@ import {
 } from "@chakra-ui/react";
 import { Link } from "react-router-dom";
 import { useToolPerformance } from "@/shared/hooks/useApi";
+import { useTimeRange } from "@/shared/context/TimeRangeContext";
 
 function fmt(val: string | null | undefined): string {
   return parseFloat(val || "0").toFixed(0);
@@ -33,7 +34,8 @@ function isMcpTool(name: string): boolean {
 }
 
 export default function McpToolsPage() {
-  const { data, isLoading, error } = useToolPerformance();
+  const { days } = useTimeRange();
+  const { data, isLoading, error } = useToolPerformance(days);
 
   if (isLoading) return <Center h="50vh"><Spinner color="brand.500" /></Center>;
   if (error) return <Box p={8}><Text color="red.500">Failed to load tool performance</Text></Box>;

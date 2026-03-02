@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Query
 from backend.config import settings
 from backend.services.query_service import QueryService
@@ -44,21 +45,21 @@ async def get_query_daily(days: int = Query(7, ge=1, le=90)):
 
 
 @router.get("/ai-gateway/models")
-async def get_ai_gateway_models(days: int = Query(7, ge=1, le=365)):
+async def get_ai_gateway_models(days: float = Query(7, ge=0.01, le=365)):
     query = query_service.build_ai_gateway_model_stats_query(days=days)
     rows = get_executor().execute(query)
     return {"models": rows, "days": days}
 
 
 @router.get("/ai-gateway/daily")
-async def get_ai_gateway_daily(days: int = Query(7, ge=1, le=365)):
+async def get_ai_gateway_daily(days: float = Query(7, ge=0.01, le=365)):
     query = query_service.build_ai_gateway_daily_query(days=days)
     rows = get_executor().execute(query)
     return {"daily": rows, "days": days}
 
 
 @router.get("/ai-gateway/errors")
-async def get_ai_gateway_errors(days: int = Query(7, ge=1, le=365)):
+async def get_ai_gateway_errors(days: float = Query(7, ge=0.01, le=365)):
     query = query_service.build_ai_gateway_errors_query(days=days)
     rows = get_executor().execute(query)
     return {"errors": rows, "days": days}

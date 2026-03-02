@@ -1201,9 +1201,50 @@ git commit -m "feat(backend): add FastAPI app with metrics router"
 
 **Files:**
 - Create: `backend/routers/sessions.py`
+- Modify: `backend/services/query_service.py` (add `build_session_detail_query`)
 - Test: `tests/backend/test_sessions_router.py`
 
-**Step 1: Write the failing test**
+**Step 1: Add `build_session_detail_query` to QueryService**
+
+Add this method to `backend/services/query_service.py` after `build_sessions_list_query`:
+
+```python
+    def build_session_detail_query(self, session_id: str) -> str:
+        return f"""
+            SELECT
+                attributes['session.id'] as session_id,
+                attributes['user.id'] as user_id,
+                MIN(attributes['event.timestamp']) as start_time,
+                MAX(attributes['event.timestamp']) as end_time,
+                COUNT(*) as event_count,
+                COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
+                COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
+                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
+                SUM(CASE WHEN attributes['event.name'] = 'api_request'
+                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+            FROM {self.logs_table}
+            WHERE attributes['session.id'] = '{session_id}'
+            GROUP BY attributes['session.id'], attributes['user.id']
+        """.strip()
+```
+
+**Step 2: Add test for `build_session_detail_query` to `tests/backend/test_query_service.py`**
+
+```python
+def test_build_session_detail_query(svc):
+    query = svc.build_session_detail_query(session_id="996a6297")
+    assert "otel_logs" in query
+    assert "996a6297" in query
+    assert "GROUP BY" in query
+    assert "total_cost_usd" in query
+```
+
+**Step 3: Run tests to verify QueryService update**
+
+Run: `pytest tests/backend/test_query_service.py -v`
+Expected: PASS (8 tests)
+
+**Step 4: Write the sessions router test**
 
 ```python
 # tests/backend/test_sessions_router.py
@@ -1249,6 +1290,32 @@ def test_list_sessions(client, mock_executor):
     assert data["sessions"][0]["session_id"] == "996a6297-0787-454a-94b8-96191aa0a22c"
 
 
+def test_get_session_detail(client, mock_executor):
+    mock_executor.execute.return_value = [
+        {
+            "session_id": "996a6297",
+            "user_id": "c35b69e8...",
+            "start_time": "2026-02-23T18:02:20Z",
+            "end_time": "2026-02-23T19:30:00Z",
+            "event_count": "111",
+            "prompt_count": "5",
+            "tool_calls": "29",
+            "errors": "22",
+            "total_cost_usd": "0.44",
+        }
+    ]
+    response = client.get("/api/v1/sessions/996a6297")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == "996a6297"
+
+
+def test_get_session_detail_not_found(client, mock_executor):
+    mock_executor.execute.return_value = []
+    response = client.get("/api/v1/sessions/nonexistent")
+    assert response.status_code == 404
+
+
 def test_get_session_timeline(client, mock_executor):
     mock_executor.execute.return_value = [
         {
@@ -1272,12 +1339,17 @@ def test_get_session_timeline(client, mock_executor):
     assert data["events"][0]["event_name"] == "user_prompt"
 ```
 
-**Step 2: Write implementation**
+**Step 5: Run sessions router tests to verify they fail**
+
+Run: `pytest tests/backend/test_sessions_router.py -v`
+Expected: FAIL with ModuleNotFoundError (sessions router not created yet)
+
+**Step 6: Write sessions router implementation**
 
 ```python
 # backend/routers/sessions.py
 from typing import Optional, List
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from backend.config import settings
 from backend.services.query_service import QueryService
 from backend.services.sql_executor import SqlExecutor
@@ -1309,27 +1381,9 @@ async def list_sessions(
 
 @router.get("/{session_id}")
 async def get_session(session_id: str):
-    query = query_service.build_sessions_list_query(limit=1, offset=0)
-    # Re-query with session filter via timeline aggregation
-    query = f"""
-        SELECT
-            attributes['session.id'] as session_id,
-            attributes['user.id'] as user_id,
-            MIN(attributes['event.timestamp']) as start_time,
-            MAX(attributes['event.timestamp']) as end_time,
-            COUNT(*) as event_count,
-            COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
-            COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
-            COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
-            SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
-        FROM {query_service.logs_table}
-        WHERE attributes['session.id'] = '{session_id}'
-        GROUP BY attributes['session.id'], attributes['user.id']
-    """.strip()
+    query = query_service.build_session_detail_query(session_id=session_id)
     rows = get_executor().execute(query)
     if not rows:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Session not found")
     return rows[0]
 
@@ -1346,11 +1400,16 @@ async def get_session_timeline(
     return {"session_id": session_id, "events": rows}
 ```
 
-**Step 3: Commit**
+**Step 7: Run sessions router tests to verify they pass**
+
+Run: `pytest tests/backend/test_sessions_router.py -v`
+Expected: PASS (4 tests)
+
+**Step 8: Commit**
 
 ```bash
-git add backend/routers/ tests/backend/
-git commit -m "feat(backend): add sessions router with timeline endpoint"
+git add backend/services/query_service.py backend/routers/sessions.py tests/backend/
+git commit -m "feat(backend): add sessions router using QueryService (no inline SQL)"
 ```
 
 ---
@@ -1363,21 +1422,118 @@ git commit -m "feat(backend): add sessions router with timeline endpoint"
 - Create: `frontend/index.html`
 - Create: `frontend/vite.config.ts`
 - Create: `frontend/tsconfig.json`
+- Create: `frontend/tsconfig.node.json`
 - Create: `frontend/src/main.tsx`
 - Create: `frontend/src/app/App.tsx`
 - Create: `frontend/src/app/providers/QueryProvider.tsx`
 - Create: `frontend/src/types/api.ts`
+- Create: `frontend/src/vite-env.d.ts`
 
-Standard Vite + React + Chakra UI + TanStack Query setup. Configure vite proxy to FastAPI on port 8000.
+**Step 1: Create `frontend/index.html`**
 
-**Step 1: Create frontend scaffold**
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claudit - Claude Code Observability</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
 
-Follow standard Vite React TS template with Chakra UI provider, React Router, and TanStack Query provider.
+**Step 2: Create `frontend/tsconfig.json`**
 
-**Step 2: Create types/api.ts matching backend models**
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
+```
+
+**Step 3: Create `frontend/tsconfig.node.json`**
+
+```json
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+```
+
+**Step 4: Create `frontend/vite.config.ts`**
 
 ```typescript
-// frontend/src/types/api.ts
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import path from "path";
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  server: {
+    port: 3000,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/health": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    outDir: "dist",
+    sourcemap: true,
+  },
+});
+```
+
+**Step 5: Create `frontend/src/vite-env.d.ts`**
+
+```typescript
+/// <reference types="vite/client" />
+```
+
+**Step 6: Create `frontend/src/types/api.ts`**
+
+```typescript
 export type EventName =
   | "user_prompt"
   | "api_request"
@@ -1390,11 +1546,11 @@ export interface SessionSummary {
   user_id: string;
   start_time: string;
   end_time: string | null;
-  event_count: number;
-  prompt_count: number;
-  total_cost_usd: number;
-  tool_calls: number;
-  errors: number;
+  event_count: string;
+  prompt_count: string;
+  total_cost_usd: string;
+  tool_calls: string;
+  errors: string;
 }
 
 export interface TimelineEvent {
@@ -1441,13 +1597,87 @@ export interface MetricsSummary {
   total_errors: string;
   total_cost_usd: string;
 }
+
+export interface ErrorStat {
+  model: string;
+  status_code: string;
+  error: string;
+  error_count: string;
+  avg_duration_ms: string;
+}
 ```
 
-**Step 3: Commit**
+**Step 7: Create `frontend/src/app/providers/QueryProvider.tsx`**
+
+```tsx
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ReactNode } from "react";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+    },
+  },
+});
+
+export function QueryProvider({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+```
+
+**Step 8: Create `frontend/src/app/App.tsx`**
+
+```tsx
+import { ChakraProvider } from "@chakra-ui/react";
+import { BrowserRouter } from "react-router-dom";
+import { QueryProvider } from "./providers/QueryProvider";
+
+export default function App() {
+  return (
+    <ChakraProvider>
+      <QueryProvider>
+        <BrowserRouter>
+          <div>Claudit app shell</div>
+        </BrowserRouter>
+      </QueryProvider>
+    </ChakraProvider>
+  );
+}
+```
+
+**Step 9: Create `frontend/src/main.tsx`**
+
+```tsx
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./app/App";
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+```
+
+**Step 10: Install dependencies**
+
+Run: `cd frontend && npm install`
+Expected: `added N packages` (no errors)
+
+**Step 11: Verify TypeScript compilation**
+
+Run: `cd frontend && npx tsc --noEmit`
+Expected: No errors
+
+**Step 12: Commit**
 
 ```bash
 git add frontend/
-git commit -m "feat(frontend): initialize React frontend with types and providers"
+git commit -m "feat(frontend): initialize React frontend with Vite, Chakra, TanStack Query"
 ```
 
 ---
@@ -1455,26 +1685,375 @@ git commit -m "feat(frontend): initialize React frontend with types and provider
 ### Task 3.2: Build Dashboard View
 
 **Files:**
+- Create: `frontend/src/shared/hooks/useApi.ts`
 - Create: `frontend/src/views/dashboard/DashboardPage.tsx`
 - Create: `frontend/src/views/dashboard/components/SummaryCards.tsx`
 - Create: `frontend/src/views/dashboard/components/ToolUsageTable.tsx`
 - Create: `frontend/src/views/dashboard/components/ErrorsTable.tsx`
-- Create: `frontend/src/shared/hooks/useApi.ts`
+- Test: `frontend/src/views/dashboard/__tests__/DashboardPage.test.tsx`
 
-Build the analytics dashboard showing:
-- Summary cards (total sessions, users, events, cost, errors)
-- Tool usage table (name, call count, avg duration, success rate)
-- MCP tool filter toggle
-- Error breakdown table
-- API performance stats
+**Step 1: Create `frontend/src/shared/hooks/useApi.ts`**
 
-Use TanStack Query hooks to fetch from `/api/v1/metrics/*` endpoints.
+```typescript
+import { useQuery } from "@tanstack/react-query";
+import type { MetricsSummary, ToolStat, ErrorStat } from "@/types/api";
 
-**Commit**
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export function useSummary() {
+  return useQuery<MetricsSummary>({
+    queryKey: ["metrics", "summary"],
+    queryFn: () => fetchJson("/api/v1/metrics/summary"),
+  });
+}
+
+export function useToolStats(mcp_only = false) {
+  return useQuery<{ tools: ToolStat[] }>({
+    queryKey: ["metrics", "tools", { mcp_only }],
+    queryFn: () =>
+      fetchJson(`/api/v1/metrics/tools?mcp_only=${mcp_only}`),
+  });
+}
+
+export function useErrorStats() {
+  return useQuery<{ errors: ErrorStat[] }>({
+    queryKey: ["metrics", "errors"],
+    queryFn: () => fetchJson("/api/v1/metrics/errors"),
+  });
+}
+
+export function useSessions(limit = 50, offset = 0) {
+  return useQuery<{ sessions: import("@/types/api").SessionSummary[] }>({
+    queryKey: ["sessions", { limit, offset }],
+    queryFn: () =>
+      fetchJson(`/api/v1/sessions?limit=${limit}&offset=${offset}`),
+  });
+}
+
+export function useSessionTimeline(
+  sessionId: string,
+  eventNames?: string[]
+) {
+  const params = new URLSearchParams();
+  if (eventNames) {
+    eventNames.forEach((n) => params.append("event_names", n));
+  }
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return useQuery<{
+    session_id: string;
+    events: import("@/types/api").TimelineEvent[];
+  }>({
+    queryKey: ["sessions", sessionId, "timeline", eventNames],
+    queryFn: () =>
+      fetchJson(`/api/v1/sessions/${sessionId}/timeline${qs}`),
+    enabled: !!sessionId,
+  });
+}
+```
+
+**Step 2: Create `frontend/src/views/dashboard/components/SummaryCards.tsx`**
+
+```tsx
+import {
+  SimpleGrid,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
+  Card,
+  CardBody,
+  Spinner,
+  Text,
+} from "@chakra-ui/react";
+import { useSummary } from "@/shared/hooks/useApi";
+
+export function SummaryCards() {
+  const { data, isLoading, error } = useSummary();
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Text color="red.500">Failed to load summary</Text>;
+  if (!data) return null;
+
+  const cards = [
+    { label: "Sessions", value: data.total_sessions },
+    { label: "Users", value: data.total_users },
+    { label: "Events", value: data.total_events },
+    { label: "Prompts", value: data.total_prompts },
+    { label: "API Calls", value: data.total_api_calls },
+    { label: "Errors", value: data.total_errors },
+    {
+      label: "Total Cost",
+      value: `$${parseFloat(data.total_cost_usd || "0").toFixed(2)}`,
+    },
+  ];
+
+  return (
+    <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4}>
+      {cards.map((c) => (
+        <Card key={c.label} size="sm">
+          <CardBody>
+            <Stat>
+              <StatLabel>{c.label}</StatLabel>
+              <StatNumber>{c.value}</StatNumber>
+            </Stat>
+          </CardBody>
+        </Card>
+      ))}
+    </SimpleGrid>
+  );
+}
+```
+
+**Step 3: Create `frontend/src/views/dashboard/components/ToolUsageTable.tsx`**
+
+```tsx
+import {
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Spinner,
+  Text,
+  Switch,
+  FormControl,
+  FormLabel,
+  Box,
+} from "@chakra-ui/react";
+import { useState } from "react";
+import { useToolStats } from "@/shared/hooks/useApi";
+
+export function ToolUsageTable() {
+  const [mcpOnly, setMcpOnly] = useState(false);
+  const { data, isLoading, error } = useToolStats(mcpOnly);
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Text color="red.500">Failed to load tool stats</Text>;
+
+  return (
+    <Box>
+      <FormControl display="flex" alignItems="center" mb={3}>
+        <FormLabel mb="0">MCP tools only</FormLabel>
+        <Switch
+          isChecked={mcpOnly}
+          onChange={(e) => setMcpOnly(e.target.checked)}
+        />
+      </FormControl>
+      <Table size="sm" variant="simple">
+        <Thead>
+          <Tr>
+            <Th>Tool</Th>
+            <Th isNumeric>Calls</Th>
+            <Th isNumeric>Avg Duration (ms)</Th>
+            <Th isNumeric>Success</Th>
+            <Th isNumeric>Failures</Th>
+          </Tr>
+        </Thead>
+        <Tbody>
+          {(data?.tools || []).map((t) => (
+            <Tr key={t.tool_name}>
+              <Td>{t.tool_name}</Td>
+              <Td isNumeric>{t.call_count}</Td>
+              <Td isNumeric>{parseFloat(t.avg_duration_ms).toFixed(0)}</Td>
+              <Td isNumeric>{t.success_count}</Td>
+              <Td isNumeric>{t.failure_count}</Td>
+            </Tr>
+          ))}
+        </Tbody>
+      </Table>
+    </Box>
+  );
+}
+```
+
+**Step 4: Create `frontend/src/views/dashboard/components/ErrorsTable.tsx`**
+
+```tsx
+import {
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  Spinner,
+  Text,
+} from "@chakra-ui/react";
+import { useErrorStats } from "@/shared/hooks/useApi";
+
+export function ErrorsTable() {
+  const { data, isLoading, error } = useErrorStats();
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Text color="red.500">Failed to load error stats</Text>;
+
+  return (
+    <Table size="sm" variant="simple">
+      <Thead>
+        <Tr>
+          <Th>Model</Th>
+          <Th>Status</Th>
+          <Th>Error</Th>
+          <Th isNumeric>Count</Th>
+          <Th isNumeric>Avg Duration (ms)</Th>
+        </Tr>
+      </Thead>
+      <Tbody>
+        {(data?.errors || []).map((e, i) => (
+          <Tr key={i}>
+            <Td>{e.model}</Td>
+            <Td>{e.status_code}</Td>
+            <Td maxW="300px" isTruncated>{e.error}</Td>
+            <Td isNumeric>{e.error_count}</Td>
+            <Td isNumeric>{parseFloat(e.avg_duration_ms).toFixed(0)}</Td>
+          </Tr>
+        ))}
+      </Tbody>
+    </Table>
+  );
+}
+```
+
+**Step 5: Create `frontend/src/views/dashboard/DashboardPage.tsx`**
+
+```tsx
+import { Box, Heading, VStack } from "@chakra-ui/react";
+import { SummaryCards } from "./components/SummaryCards";
+import { ToolUsageTable } from "./components/ToolUsageTable";
+import { ErrorsTable } from "./components/ErrorsTable";
+
+export default function DashboardPage() {
+  return (
+    <Box p={6}>
+      <VStack spacing={8} align="stretch">
+        <Heading size="lg">Analytics Dashboard</Heading>
+        <SummaryCards />
+        <Box>
+          <Heading size="md" mb={4}>
+            Tool Usage
+          </Heading>
+          <ToolUsageTable />
+        </Box>
+        <Box>
+          <Heading size="md" mb={4}>
+            Errors
+          </Heading>
+          <ErrorsTable />
+        </Box>
+      </VStack>
+    </Box>
+  );
+}
+```
+
+**Step 6: Write test `frontend/src/views/dashboard/__tests__/DashboardPage.test.tsx`**
+
+```tsx
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { ChakraProvider } from "@chakra-ui/react";
+import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import DashboardPage from "../DashboardPage";
+
+// Mock the API hooks
+vi.mock("@/shared/hooks/useApi", () => ({
+  useSummary: () => ({
+    data: {
+      total_sessions: "3",
+      total_users: "1",
+      total_events: "111",
+      total_prompts: "8",
+      total_api_calls: "24",
+      total_errors: "22",
+      total_cost_usd: "0.44",
+    },
+    isLoading: false,
+    error: null,
+  }),
+  useToolStats: () => ({
+    data: {
+      tools: [
+        {
+          tool_name: "Bash",
+          call_count: "15",
+          avg_duration_ms: "2100.5",
+          success_count: "14",
+          failure_count: "1",
+          total_result_bytes: "15000",
+        },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  }),
+  useErrorStats: () => ({
+    data: {
+      errors: [
+        {
+          model: "claude-haiku-4-5-20251001",
+          status_code: "404",
+          error: "endpoint not found",
+          error_count: "22",
+          avg_duration_ms: "344.0",
+        },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+function renderWithProviders(ui: React.ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <ChakraProvider>
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+    </ChakraProvider>
+  );
+}
+
+describe("DashboardPage", () => {
+  it("renders the dashboard heading", () => {
+    renderWithProviders(<DashboardPage />);
+    expect(screen.getByText("Analytics Dashboard")).toBeDefined();
+  });
+
+  it("renders summary cards with data", () => {
+    renderWithProviders(<DashboardPage />);
+    expect(screen.getByText("3")).toBeDefined(); // total_sessions
+    expect(screen.getByText("$0.44")).toBeDefined(); // total_cost
+  });
+
+  it("renders tool usage table", () => {
+    renderWithProviders(<DashboardPage />);
+    expect(screen.getByText("Bash")).toBeDefined();
+    expect(screen.getByText("15")).toBeDefined(); // call_count
+  });
+
+  it("renders errors table", () => {
+    renderWithProviders(<DashboardPage />);
+    expect(screen.getByText("404")).toBeDefined();
+  });
+});
+```
+
+**Step 7: Run frontend tests**
+
+Run: `cd frontend && npx vitest run src/views/dashboard/__tests__/DashboardPage.test.tsx`
+Expected: PASS (4 tests)
+
+**Step 8: Commit**
 
 ```bash
 git add frontend/src/
-git commit -m "feat(frontend): add analytics dashboard view"
+git commit -m "feat(frontend): add analytics dashboard with summary, tools, and errors"
 ```
 
 ---
@@ -1484,17 +2063,184 @@ git commit -m "feat(frontend): add analytics dashboard view"
 **Files:**
 - Create: `frontend/src/views/sessions/SessionsPage.tsx`
 - Create: `frontend/src/views/sessions/components/SessionCard.tsx`
+- Test: `frontend/src/views/sessions/__tests__/SessionsPage.test.tsx`
 
-Session list page with:
-- List of sessions with summary stats (cost, events, prompts, errors)
-- Click to navigate to session detail
-- Pagination
+**Step 1: Create `frontend/src/views/sessions/components/SessionCard.tsx`**
 
-**Commit**
+```tsx
+import {
+  Card,
+  CardBody,
+  HStack,
+  VStack,
+  Text,
+  Badge,
+  Stat,
+  StatLabel,
+  StatNumber,
+  SimpleGrid,
+} from "@chakra-ui/react";
+import { useNavigate } from "react-router-dom";
+import type { SessionSummary } from "@/types/api";
+
+interface Props {
+  session: SessionSummary;
+}
+
+export function SessionCard({ session }: Props) {
+  const navigate = useNavigate();
+
+  return (
+    <Card
+      cursor="pointer"
+      onClick={() => navigate(`/sessions/${session.session_id}`)}
+      _hover={{ shadow: "md" }}
+      size="sm"
+    >
+      <CardBody>
+        <VStack align="stretch" spacing={2}>
+          <HStack justify="space-between">
+            <Text fontFamily="mono" fontSize="sm" fontWeight="bold">
+              {session.session_id.slice(0, 8)}...
+            </Text>
+            <Text fontSize="xs" color="gray.500">
+              {new Date(session.start_time).toLocaleString()}
+            </Text>
+          </HStack>
+          <SimpleGrid columns={4} spacing={2}>
+            <Stat size="sm">
+              <StatLabel>Events</StatLabel>
+              <StatNumber fontSize="md">{session.event_count}</StatNumber>
+            </Stat>
+            <Stat size="sm">
+              <StatLabel>Prompts</StatLabel>
+              <StatNumber fontSize="md">{session.prompt_count}</StatNumber>
+            </Stat>
+            <Stat size="sm">
+              <StatLabel>Cost</StatLabel>
+              <StatNumber fontSize="md">
+                ${parseFloat(session.total_cost_usd || "0").toFixed(2)}
+              </StatNumber>
+            </Stat>
+            <Stat size="sm">
+              <StatLabel>Errors</StatLabel>
+              <StatNumber
+                fontSize="md"
+                color={parseInt(session.errors) > 0 ? "red.500" : "green.500"}
+              >
+                {session.errors}
+              </StatNumber>
+            </Stat>
+          </SimpleGrid>
+        </VStack>
+      </CardBody>
+    </Card>
+  );
+}
+```
+
+**Step 2: Create `frontend/src/views/sessions/SessionsPage.tsx`**
+
+```tsx
+import { Box, Heading, VStack, Spinner, Text } from "@chakra-ui/react";
+import { useSessions } from "@/shared/hooks/useApi";
+import { SessionCard } from "./components/SessionCard";
+
+export default function SessionsPage() {
+  const { data, isLoading, error } = useSessions();
+
+  return (
+    <Box p={6}>
+      <Heading size="lg" mb={6}>
+        Sessions
+      </Heading>
+      {isLoading && <Spinner />}
+      {error && <Text color="red.500">Failed to load sessions</Text>}
+      <VStack spacing={3} align="stretch">
+        {(data?.sessions || []).map((s) => (
+          <SessionCard key={s.session_id} session={s} />
+        ))}
+        {data?.sessions?.length === 0 && (
+          <Text color="gray.500">No sessions found</Text>
+        )}
+      </VStack>
+    </Box>
+  );
+}
+```
+
+**Step 3: Write test `frontend/src/views/sessions/__tests__/SessionsPage.test.tsx`**
+
+```tsx
+import { describe, it, expect, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { ChakraProvider } from "@chakra-ui/react";
+import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import SessionsPage from "../SessionsPage";
+
+vi.mock("@/shared/hooks/useApi", () => ({
+  useSessions: () => ({
+    data: {
+      sessions: [
+        {
+          session_id: "996a6297-0787-454a-94b8-96191aa0a22c",
+          user_id: "c35b69e8...",
+          start_time: "2026-02-23T18:02:20Z",
+          end_time: "2026-02-23T19:30:00Z",
+          event_count: "111",
+          prompt_count: "5",
+          total_cost_usd: "0.44",
+          tool_calls: "29",
+          errors: "22",
+        },
+      ],
+    },
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+function renderWithProviders(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <ChakraProvider>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>
+    </ChakraProvider>
+  );
+}
+
+describe("SessionsPage", () => {
+  it("renders sessions heading", () => {
+    renderWithProviders(<SessionsPage />);
+    expect(screen.getByText("Sessions")).toBeDefined();
+  });
+
+  it("renders session card with truncated id", () => {
+    renderWithProviders(<SessionsPage />);
+    expect(screen.getByText("996a6297...")).toBeDefined();
+  });
+
+  it("renders session stats", () => {
+    renderWithProviders(<SessionsPage />);
+    expect(screen.getByText("111")).toBeDefined(); // event_count
+    expect(screen.getByText("$0.44")).toBeDefined(); // cost
+  });
+});
+```
+
+**Step 4: Run test**
+
+Run: `cd frontend && npx vitest run src/views/sessions/__tests__/SessionsPage.test.tsx`
+Expected: PASS (3 tests)
+
+**Step 5: Commit**
 
 ```bash
 git add frontend/src/
-git commit -m "feat(frontend): add sessions list view"
+git commit -m "feat(frontend): add sessions list view with session cards"
 ```
 
 ---
@@ -1505,21 +2251,305 @@ git commit -m "feat(frontend): add sessions list view"
 - Create: `frontend/src/views/sessions/SessionDetailPage.tsx`
 - Create: `frontend/src/views/sessions/components/SessionTimeline.tsx`
 - Create: `frontend/src/views/sessions/components/TimelineEvent.tsx`
+- Test: `frontend/src/views/sessions/__tests__/TimelineEvent.test.tsx`
 
-Timeline view showing:
-- Session header (id, user, duration, cost)
-- Event filter chips (All, Prompts, API Calls, Tools, Errors)
-- Chronological event list with color-coded event types
-- Event detail expansion (show all attributes)
+**Step 1: Create `frontend/src/views/sessions/components/TimelineEvent.tsx`**
 
-Event rendering by type:
-- `user_prompt`: Show prompt text, prompt_length
-- `api_request`: Show model, duration, tokens (in/out/cache), cost
-- `api_error`: Show model, error message, status_code, duration
-- `tool_decision`: Show tool_name, decision, source
-- `tool_result`: Show tool_name, duration, success, result_size
+```tsx
+import { Box, HStack, Text, Badge, VStack, Code } from "@chakra-ui/react";
+import type { TimelineEvent as TEvent } from "@/types/api";
 
-**Commit**
+const EVENT_COLORS: Record<string, string> = {
+  user_prompt: "teal",
+  api_request: "green",
+  api_error: "red",
+  tool_decision: "blue",
+  tool_result: "cyan",
+};
+
+const EVENT_ICONS: Record<string, string> = {
+  user_prompt: ">>>",
+  api_request: "\u25CB",
+  api_error: "\u26A0",
+  tool_decision: "\u25C6",
+  tool_result: "\u25C6",
+};
+
+interface Props {
+  event: TEvent;
+}
+
+export function TimelineEventRow({ event }: Props) {
+  const color = EVENT_COLORS[event.event_name] || "gray";
+  const icon = EVENT_ICONS[event.event_name] || "\u2022";
+  const ts = new Date(event.timestamp).toLocaleTimeString();
+
+  return (
+    <Box borderLeft="3px solid" borderColor={`${color}.400`} pl={4} py={2}>
+      <HStack spacing={3} mb={1}>
+        <Text fontSize="xs" color="gray.500" fontFamily="mono" minW="50px">
+          #{event.sequence}
+        </Text>
+        <Text fontSize="xs" color="gray.500">
+          {ts}
+        </Text>
+        <Badge colorScheme={color} fontSize="xs">
+          {icon} {event.event_name.toUpperCase()}
+        </Badge>
+        {event.model && (
+          <Badge variant="outline" fontSize="xs">
+            {event.model}
+          </Badge>
+        )}
+        {event.tool_name && (
+          <Badge variant="outline" fontSize="xs">
+            {event.tool_name}
+          </Badge>
+        )}
+      </HStack>
+
+      <VStack align="stretch" spacing={0} pl="62px" fontSize="sm">
+        {event.event_name === "user_prompt" && event.prompt && (
+          <Text noOfLines={2} color="gray.700">
+            "{event.prompt}"
+          </Text>
+        )}
+        {event.event_name === "api_request" && (
+          <>
+            <HStack spacing={4}>
+              <Text>Duration: {event.duration_ms}ms</Text>
+              <Text>Cost: ${event.cost_usd}</Text>
+            </HStack>
+            <Text fontSize="xs" color="gray.500">
+              Tokens: {event.input_tokens} in / {event.output_tokens} out /{" "}
+              {event.cache_read_tokens} cache_read
+            </Text>
+          </>
+        )}
+        {event.event_name === "api_error" && (
+          <Text color="red.600">
+            {event.status_code}: {event.error}
+          </Text>
+        )}
+        {event.event_name === "tool_decision" && (
+          <Text>
+            {event.decision} via {event.source}
+          </Text>
+        )}
+        {event.event_name === "tool_result" && (
+          <HStack spacing={4}>
+            <Text>
+              Duration: {event.duration_ms}ms
+            </Text>
+            <Badge colorScheme={event.success === "true" ? "green" : "red"}>
+              {event.success === "true" ? "success" : "failed"}
+            </Badge>
+            {event.tool_result_size_bytes && (
+              <Text fontSize="xs">{event.tool_result_size_bytes} bytes</Text>
+            )}
+          </HStack>
+        )}
+      </VStack>
+    </Box>
+  );
+}
+```
+
+**Step 2: Create `frontend/src/views/sessions/components/SessionTimeline.tsx`**
+
+```tsx
+import { VStack, HStack, Button, Box } from "@chakra-ui/react";
+import { useState } from "react";
+import type { TimelineEvent } from "@/types/api";
+import { TimelineEventRow } from "./TimelineEvent";
+
+const FILTERS = [
+  { label: "All", value: undefined },
+  { label: "Prompts", value: ["user_prompt"] },
+  { label: "API Calls", value: ["api_request"] },
+  { label: "Tools", value: ["tool_decision", "tool_result"] },
+  { label: "Errors", value: ["api_error"] },
+] as const;
+
+interface Props {
+  events: TimelineEvent[];
+}
+
+export function SessionTimeline({ events }: Props) {
+  const [filter, setFilter] = useState<string[] | undefined>(undefined);
+
+  const filtered = filter
+    ? events.filter((e) => filter.includes(e.event_name))
+    : events;
+
+  return (
+    <Box>
+      <HStack spacing={2} mb={4}>
+        {FILTERS.map((f) => (
+          <Button
+            key={f.label}
+            size="sm"
+            variant={
+              JSON.stringify(filter) === JSON.stringify(f.value)
+                ? "solid"
+                : "outline"
+            }
+            onClick={() => setFilter(f.value as string[] | undefined)}
+          >
+            {f.label}
+          </Button>
+        ))}
+      </HStack>
+      <VStack spacing={1} align="stretch">
+        {filtered.map((e) => (
+          <TimelineEventRow key={`${e.sequence}`} event={e} />
+        ))}
+      </VStack>
+    </Box>
+  );
+}
+```
+
+**Step 3: Create `frontend/src/views/sessions/SessionDetailPage.tsx`**
+
+```tsx
+import {
+  Box,
+  Heading,
+  HStack,
+  Text,
+  Spinner,
+  Badge,
+  VStack,
+} from "@chakra-ui/react";
+import { useParams } from "react-router-dom";
+import { useSessionTimeline } from "@/shared/hooks/useApi";
+import { SessionTimeline } from "./components/SessionTimeline";
+
+export default function SessionDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const { data, isLoading, error } = useSessionTimeline(id || "");
+
+  if (!id) return <Text>No session ID</Text>;
+  if (isLoading) return <Spinner />;
+  if (error) return <Text color="red.500">Failed to load session</Text>;
+
+  const events = data?.events || [];
+
+  return (
+    <Box p={6}>
+      <VStack align="stretch" spacing={4}>
+        <Heading size="lg">Session Timeline</Heading>
+        <HStack spacing={4}>
+          <Text fontFamily="mono" fontSize="sm">
+            {id}
+          </Text>
+          <Badge>{events.length} events</Badge>
+        </HStack>
+        <SessionTimeline events={events} />
+      </VStack>
+    </Box>
+  );
+}
+```
+
+**Step 4: Write test `frontend/src/views/sessions/__tests__/TimelineEvent.test.tsx`**
+
+```tsx
+import { describe, it, expect } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { ChakraProvider } from "@chakra-ui/react";
+import { TimelineEventRow } from "../components/TimelineEvent";
+import type { TimelineEvent } from "@/types/api";
+
+function renderEvent(event: Partial<TimelineEvent>) {
+  const defaults: TimelineEvent = {
+    event_name: "user_prompt",
+    timestamp: "2026-02-23T18:02:20.757Z",
+    sequence: 1,
+    session_id: "996a6297",
+    prompt_id: null,
+    user_id: null,
+    tool_name: null,
+    model: null,
+    duration_ms: null,
+    cost_usd: null,
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_tokens: null,
+    cache_creation_tokens: null,
+    error: null,
+    status_code: null,
+    success: null,
+    decision: null,
+    source: null,
+    prompt: null,
+    prompt_length: null,
+    tool_result_size_bytes: null,
+    speed: null,
+    ...event,
+  };
+  return render(
+    <ChakraProvider>
+      <TimelineEventRow event={defaults} />
+    </ChakraProvider>
+  );
+}
+
+describe("TimelineEventRow", () => {
+  it("renders user_prompt with prompt text", () => {
+    renderEvent({
+      event_name: "user_prompt",
+      prompt: "review my config",
+    });
+    expect(screen.getByText(/review my config/)).toBeDefined();
+    expect(screen.getByText(/USER_PROMPT/)).toBeDefined();
+  });
+
+  it("renders api_request with model and cost", () => {
+    renderEvent({
+      event_name: "api_request",
+      model: "claude-opus-4-6",
+      duration_ms: "7221",
+      cost_usd: "0.039",
+      input_tokens: "1",
+      output_tokens: "470",
+      cache_read_tokens: "47356",
+    });
+    expect(screen.getByText("claude-opus-4-6")).toBeDefined();
+    expect(screen.getByText(/\$0.039/)).toBeDefined();
+  });
+
+  it("renders api_error with status and message", () => {
+    renderEvent({
+      event_name: "api_error",
+      model: "claude-haiku-4-5",
+      status_code: "404",
+      error: "endpoint not found",
+    });
+    expect(screen.getByText(/404: endpoint not found/)).toBeDefined();
+  });
+
+  it("renders tool_result with success badge", () => {
+    renderEvent({
+      event_name: "tool_result",
+      tool_name: "Bash",
+      duration_ms: "2330",
+      success: "true",
+      tool_result_size_bytes: "1274",
+    });
+    expect(screen.getByText("Bash")).toBeDefined();
+    expect(screen.getByText("success")).toBeDefined();
+  });
+});
+```
+
+**Step 5: Run test**
+
+Run: `cd frontend && npx vitest run src/views/sessions/__tests__/TimelineEvent.test.tsx`
+Expected: PASS (4 tests)
+
+**Step 6: Commit**
 
 ```bash
 git add frontend/src/
@@ -1534,16 +2564,196 @@ git commit -m "feat(frontend): add session timeline view with event rendering"
 - Create: `frontend/src/app/router/viewRegistry.ts`
 - Create: `frontend/src/app/Layout.tsx`
 - Modify: `frontend/src/app/App.tsx`
+- Test: `frontend/src/app/__tests__/App.test.tsx`
 
-Wire up routing:
-- `/` -> redirect to `/dashboard`
-- `/dashboard` -> DashboardPage
-- `/sessions` -> SessionsPage
-- `/sessions/:id` -> SessionDetailPage
+**Step 1: Create `frontend/src/app/router/viewRegistry.ts`**
 
-Navigation sidebar with Dashboard and Sessions links.
+```typescript
+import { lazy } from "react";
 
-**Commit**
+const DashboardPage = lazy(
+  () => import("@/views/dashboard/DashboardPage")
+);
+const SessionsPage = lazy(
+  () => import("@/views/sessions/SessionsPage")
+);
+const SessionDetailPage = lazy(
+  () => import("@/views/sessions/SessionDetailPage")
+);
+
+export interface ViewEntry {
+  id: string;
+  path: string;
+  component: React.LazyExoticComponent<React.ComponentType>;
+  label?: string;
+  nav: boolean;
+}
+
+export const viewRegistry: ViewEntry[] = [
+  {
+    id: "dashboard",
+    path: "/dashboard",
+    component: DashboardPage,
+    label: "Dashboard",
+    nav: true,
+  },
+  {
+    id: "sessions",
+    path: "/sessions",
+    component: SessionsPage,
+    label: "Sessions",
+    nav: true,
+  },
+  {
+    id: "session-detail",
+    path: "/sessions/:id",
+    component: SessionDetailPage,
+    nav: false,
+  },
+];
+```
+
+**Step 2: Create `frontend/src/app/Layout.tsx`**
+
+```tsx
+import {
+  Box,
+  Flex,
+  VStack,
+  Link as ChakraLink,
+  Heading,
+  Divider,
+} from "@chakra-ui/react";
+import { Link, useLocation, Outlet } from "react-router-dom";
+import { viewRegistry } from "./router/viewRegistry";
+
+export function Layout() {
+  const location = useLocation();
+
+  const navItems = viewRegistry.filter((v) => v.nav);
+
+  return (
+    <Flex minH="100vh">
+      <Box w="220px" bg="gray.50" p={4} borderRight="1px" borderColor="gray.200">
+        <Heading size="md" mb={4}>
+          Claudit
+        </Heading>
+        <Divider mb={4} />
+        <VStack align="stretch" spacing={1}>
+          {navItems.map((v) => (
+            <ChakraLink
+              as={Link}
+              to={v.path}
+              key={v.id}
+              px={3}
+              py={2}
+              borderRadius="md"
+              bg={location.pathname.startsWith(v.path) ? "blue.50" : "transparent"}
+              color={location.pathname.startsWith(v.path) ? "blue.600" : "gray.700"}
+              fontWeight={location.pathname.startsWith(v.path) ? "semibold" : "normal"}
+              _hover={{ bg: "blue.50" }}
+            >
+              {v.label}
+            </ChakraLink>
+          ))}
+        </VStack>
+      </Box>
+      <Box flex={1} overflow="auto">
+        <Outlet />
+      </Box>
+    </Flex>
+  );
+}
+```
+
+**Step 3: Update `frontend/src/app/App.tsx`**
+
+```tsx
+import { ChakraProvider } from "@chakra-ui/react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Suspense } from "react";
+import { Spinner, Center } from "@chakra-ui/react";
+import { QueryProvider } from "./providers/QueryProvider";
+import { Layout } from "./Layout";
+import { viewRegistry } from "./router/viewRegistry";
+
+function LoadingFallback() {
+  return (
+    <Center h="100vh">
+      <Spinner size="xl" />
+    </Center>
+  );
+}
+
+export default function App() {
+  return (
+    <ChakraProvider>
+      <QueryProvider>
+        <BrowserRouter>
+          <Suspense fallback={<LoadingFallback />}>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                {viewRegistry.map((v) => (
+                  <Route key={v.id} path={v.path} element={<v.component />} />
+                ))}
+              </Route>
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+      </QueryProvider>
+    </ChakraProvider>
+  );
+}
+```
+
+**Step 4: Write test `frontend/src/app/__tests__/App.test.tsx`**
+
+```tsx
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import App from "../App";
+
+// Mock all lazy-loaded views
+vi.mock("@/views/dashboard/DashboardPage", () => ({
+  default: () => <div>Dashboard Mock</div>,
+}));
+vi.mock("@/views/sessions/SessionsPage", () => ({
+  default: () => <div>Sessions Mock</div>,
+}));
+vi.mock("@/views/sessions/SessionDetailPage", () => ({
+  default: () => <div>Session Detail Mock</div>,
+}));
+
+describe("App", () => {
+  it("renders and redirects to dashboard", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Claudit")).toBeDefined();
+    });
+  });
+
+  it("renders navigation links", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Dashboard")).toBeDefined();
+      expect(screen.getByText("Sessions")).toBeDefined();
+    });
+  });
+});
+```
+
+**Step 5: Run test**
+
+Run: `cd frontend && npx vitest run src/app/__tests__/App.test.tsx`
+Expected: PASS (2 tests)
+
+**Step 6: Verify full TypeScript compilation**
+
+Run: `cd frontend && npx tsc --noEmit`
+Expected: No errors
+
+**Step 7: Commit**
 
 ```bash
 git add frontend/src/
@@ -1557,15 +2767,34 @@ git commit -m "feat(frontend): add view registry, routing, and layout"
 ### Task 4.1: Frontend Build Integration
 
 **Files:**
-- Modify: `backend/main.py` (serve frontend dist)
-- Modify: `frontend/vite.config.ts` (output to correct dist path)
+- Modify: `backend/main.py` (already handles static files)
+- Verify: `frontend/vite.config.ts` (output configured correctly)
 
-Configure Vite to build into `frontend/dist/`. FastAPI serves this as static files. Vite dev proxy points to FastAPI.
+**Step 1: Build the frontend**
 
-**Commit**
+Run: `cd frontend && npm run build`
+Expected: Output to `frontend/dist/` with `index.html` and assets
+
+**Step 2: Verify `backend/main.py` serves static files**
+
+The code already has this at the bottom of `backend/main.py`:
+
+```python
+# Serve static files in production
+frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
+```
+
+Verify this path resolves correctly:
+
+Run: `python -c "import os; print(os.path.exists('frontend/dist/index.html'))"`
+Expected: `True`
+
+**Step 3: Commit**
 
 ```bash
-git add backend/ frontend/
+git add frontend/dist/ backend/
 git commit -m "feat: integrate frontend build with backend static serving"
 ```
 
@@ -1574,17 +2803,208 @@ git commit -m "feat: integrate frontend build with backend static serving"
 ### Task 4.2: End-to-End Smoke Test
 
 **Files:**
-- Test: `tests/integration/test_smoke.py`
+- Create: `tests/__init__.py`
+- Create: `tests/integration/__init__.py`
+- Create: `tests/integration/test_smoke.py`
 
-Integration test that:
-1. Starts FastAPI test client
-2. Mocks SqlExecutor with realistic OTEL data
-3. Verifies `/api/v1/metrics/summary` returns data
-4. Verifies `/api/v1/sessions` returns sessions
-5. Verifies `/api/v1/sessions/{id}/timeline` returns events
-6. Verifies `/health` returns healthy
+**Step 1: Write the smoke test**
 
-**Commit**
+```python
+# tests/integration/test_smoke.py
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import patch, MagicMock
+
+
+MOCK_SESSIONS = [
+    {
+        "session_id": "996a6297-0787-454a-94b8-96191aa0a22c",
+        "user_id": "c35b69e8",
+        "start_time": "2026-02-23T18:02:20Z",
+        "end_time": "2026-02-23T19:30:00Z",
+        "event_count": "111",
+        "prompt_count": "5",
+        "tool_calls": "29",
+        "errors": "22",
+        "total_cost_usd": "0.44",
+    }
+]
+
+MOCK_SUMMARY = [
+    {
+        "total_sessions": "3",
+        "total_users": "1",
+        "total_events": "111",
+        "total_prompts": "8",
+        "total_api_calls": "24",
+        "total_errors": "22",
+        "total_cost_usd": "0.44",
+    }
+]
+
+MOCK_TIMELINE = [
+    {
+        "event_name": "user_prompt",
+        "timestamp": "2026-02-23T18:02:20.757Z",
+        "sequence": 1,
+        "session_id": "996a6297",
+        "prompt_id": "efeed64b",
+        "user_id": "c35b69e8",
+        "tool_name": None,
+        "model": None,
+        "duration_ms": None,
+        "cost_usd": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+        "error": None,
+        "status_code": None,
+        "success": None,
+        "decision": None,
+        "source": None,
+        "prompt": "review OTEL config",
+        "prompt_length": "18",
+        "tool_result_size_bytes": None,
+        "speed": None,
+    },
+    {
+        "event_name": "api_request",
+        "timestamp": "2026-02-23T18:02:25.000Z",
+        "sequence": 2,
+        "session_id": "996a6297",
+        "prompt_id": "efeed64b",
+        "user_id": "c35b69e8",
+        "tool_name": None,
+        "model": "claude-opus-4-6",
+        "duration_ms": "7221",
+        "cost_usd": "0.039",
+        "input_tokens": "1",
+        "output_tokens": "470",
+        "cache_read_tokens": "47356",
+        "cache_creation_tokens": "521",
+        "error": None,
+        "status_code": None,
+        "success": None,
+        "decision": None,
+        "source": None,
+        "prompt": None,
+        "prompt_length": None,
+        "tool_result_size_bytes": None,
+        "speed": "65.1",
+    },
+]
+
+MOCK_TOOLS = [
+    {
+        "tool_name": "Bash",
+        "call_count": "15",
+        "avg_duration_ms": "2100.5",
+        "success_count": "14",
+        "failure_count": "1",
+        "total_result_bytes": "15000",
+    }
+]
+
+MOCK_ERRORS = [
+    {
+        "model": "claude-haiku-4-5-20251001",
+        "status_code": "404",
+        "error": "endpoint does not exist",
+        "error_count": "22",
+        "avg_duration_ms": "344.0",
+    }
+]
+
+
+def mock_execute_side_effect(query: str):
+    """Route mock responses based on SQL query content."""
+    q = query.lower()
+    if "group by attributes['session.id']" in q and "limit" in q:
+        return MOCK_SESSIONS
+    if "count(distinct attributes['session.id'])" in q:
+        return MOCK_SUMMARY
+    if "order by cast(attributes['event.sequence']" in q:
+        return MOCK_TIMELINE
+    if "event.name'] = 'tool_result'" in q and "group by" in q:
+        return MOCK_TOOLS
+    if "event.name'] = 'api_error'" in q and "group by" in q:
+        return MOCK_ERRORS
+    return []
+
+
+@pytest.fixture
+def client():
+    with patch("backend.routers.metrics.get_executor") as mock_met, \
+         patch("backend.routers.sessions.get_executor") as mock_sess:
+        executor = MagicMock()
+        executor.execute.side_effect = mock_execute_side_effect
+        mock_met.return_value = executor
+        mock_sess.return_value = executor
+
+        from backend.main import app
+        yield TestClient(app)
+
+
+def test_health_check(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+def test_metrics_summary(client):
+    response = client.get("/api/v1/metrics/summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_sessions"] == "3"
+    assert data["total_cost_usd"] == "0.44"
+
+
+def test_metrics_tools(client):
+    response = client.get("/api/v1/metrics/tools")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["tools"]) >= 1
+    assert data["tools"][0]["tool_name"] == "Bash"
+
+
+def test_metrics_errors(client):
+    response = client.get("/api/v1/metrics/errors")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["errors"]) >= 1
+    assert data["errors"][0]["status_code"] == "404"
+
+
+def test_sessions_list(client):
+    response = client.get("/api/v1/sessions")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["sessions"]) >= 1
+    assert data["sessions"][0]["session_id"] == "996a6297-0787-454a-94b8-96191aa0a22c"
+
+
+def test_session_timeline(client):
+    response = client.get("/api/v1/sessions/996a6297/timeline")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == "996a6297"
+    assert len(data["events"]) == 2
+    assert data["events"][0]["event_name"] == "user_prompt"
+    assert data["events"][1]["event_name"] == "api_request"
+```
+
+**Step 2: Run the smoke test**
+
+Run: `pytest tests/integration/test_smoke.py -v`
+Expected: PASS (6 tests)
+
+**Step 3: Run all backend tests together**
+
+Run: `pytest tests/ -v`
+Expected: All tests PASS
+
+**Step 4: Commit**
 
 ```bash
 git add tests/
@@ -1593,18 +3013,33 @@ git commit -m "test: add end-to-end smoke test with mock OTEL data"
 
 ---
 
-### Task 4.3: Deploy to Databricks
+### Task 4.3: Validate and Deploy to Databricks
 
-**Steps:**
-1. `databricks bundle validate -t dev`
-2. `databricks bundle deploy -t dev`
-3. Verify app is running and accessible
-4. Test live queries against real OTEL tables
+**Step 1: Validate DAB bundle**
 
-**Commit**
+Run: `databricks bundle validate -t dev`
+Expected: `Successfully validated bundle` (no errors)
+
+**Step 2: Build frontend for production**
+
+Run: `cd frontend && npm run build`
+Expected: Output in `frontend/dist/` with no errors
+
+**Step 3: Deploy to Databricks**
+
+Run: `databricks bundle deploy -t dev`
+Expected: Successful deployment message with app URL
+
+**Step 4: Verify app is running**
+
+Run: `databricks apps get claudit-observability --profile DEFAULT`
+Expected: App status shows `RUNNING`
+
+**Step 5: Commit**
 
 ```bash
-git commit -m "chore: verify deployment configuration"
+git add -A
+git commit -m "chore: validate and deploy claudit to Databricks Apps"
 ```
 
 ---
@@ -1653,3 +3088,22 @@ When direct queries become slow (>10K events):
 - Add user lookup to session queries
 - Create `frontend/src/views/users/` view
 - Manager dashboard with per-user comparisons
+
+### Backlog Module 8: Optimization Chatbot
+
+Contextual advisor for model right-sizing based on Model Efficiency tab data:
+- Recommend specific optimization methods: `--model` flag, CLAUDE.md directives, `/model` switching, MCP server config, API gateway routing, prompt optimization
+- UX: inline recommendations panel, chat sidebar, or action cards per rightsizing opportunity
+- Dependencies: Model Efficiency tab (done), drill-down details (done)
+
+---
+
+## Execution Handoff
+
+Plan complete and saved to `docs/plans/2026-02-20-claudit-implementation.md`. Two execution options:
+
+**1. Subagent-Driven (this session)** - I dispatch fresh subagent per task, review between tasks, fast iteration
+
+**2. Parallel Session (separate)** - Open new session with executing-plans, batch execution with checkpoints
+
+Which approach?

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ChakraProvider } from "@chakra-ui/react";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import DashboardPage from "../DashboardPage";
 
 // Mock the API hooks
@@ -19,18 +20,18 @@ vi.mock("@/shared/hooks/useApi", () => ({
     isLoading: false,
     error: null,
   }),
-  useErrorStats: () => ({
+  useKpiBadges: () => ({
     data: {
-      errors: [
-        {
-          model: "claude-haiku-4-5-20251001",
-          status_code: "404",
-          error: "endpoint not found",
-          error_count: "22",
-          avg_duration_ms: "344.0",
-        },
-      ],
+      cache_hit_pct: "72.5",
+      tool_success_rate: "95.0",
+      avg_turnaround_sec: "12",
+      cost_trend_direction: "down",
     },
+    isLoading: false,
+    error: null,
+  }),
+  useKpiCostTrend: () => ({
+    data: { trend: [], days: 7 },
     isLoading: false,
     error: null,
   }),
@@ -42,7 +43,9 @@ function renderWithProviders(ui: React.ReactElement) {
   });
   return render(
     <ChakraProvider>
-      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>
     </ChakraProvider>
   );
 }
@@ -59,8 +62,9 @@ describe("DashboardPage", () => {
     expect(screen.getByText("$0.44")).toBeDefined(); // total_cost
   });
 
-  it("renders errors table", () => {
+  it("renders KPI badges", () => {
     renderWithProviders(<DashboardPage />);
-    expect(screen.getByText("404")).toBeDefined();
+    expect(screen.getByText("72.5%")).toBeDefined(); // cache_hit_pct
+    expect(screen.getByText("95.0%")).toBeDefined(); // tool_success_rate
   });
 });

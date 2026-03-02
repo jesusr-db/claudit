@@ -17,8 +17,8 @@ def get_executor() -> SqlExecutor:
 
 
 @router.get("/summary")
-async def get_summary():
-    query = query_service.build_summary_query()
+async def get_summary(days: Optional[float] = Query(None, ge=0.01, le=365)):
+    query = query_service.build_summary_query(days=days)
     rows = get_executor().execute(query)
     return rows[0] if rows else {}
 

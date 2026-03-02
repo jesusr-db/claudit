@@ -21,12 +21,41 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { useSessions, useSessionTimeline } from "@/shared/hooks/useApi";
+import { useSessions, useSessionTimeline, useTurnaroundSummary, useTurnaroundDetail } from "@/shared/hooks/useApi";
+import type { TurnaroundPrompt } from "@/types/api";
+import { useTimeRange } from "@/shared/context/TimeRangeContext";
 import { SessionCard } from "./components/SessionCard";
 import { SessionTimeline } from "./components/SessionTimeline";
 import type { SessionSummary } from "@/types/api";
 
 /* ── helpers ── */
+
+function formatSec(val: string | null | undefined): string {
+  if (!val || val === "null") return "-";
+  const n = parseFloat(val);
+  if (isNaN(n)) return "-";
+  if (n >= 60) return `${Math.floor(n / 60)}m ${Math.round(n % 60)}s`;
+  return `${Math.round(n)}s`;
+}
+
+function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <Box
+      bg="surface.card"
+      borderRadius="soft-lg"
+      boxShadow="soft"
+      border="1px solid"
+      borderColor="soft.border"
+      p={5}
+      flex={1}
+      minW="180px"
+    >
+      <Text fontSize="xs" color="gray.500" fontWeight="500" mb={1}>{label}</Text>
+      <Text fontSize="2xl" fontWeight="700" color="gray.800" fontFamily="mono">{value}</Text>
+      {sub && <Text fontSize="xs" color="gray.400" mt={1}>{sub}</Text>}
+    </Box>
+  );
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -34,8 +63,18 @@ function formatTokens(n: number): string {
   return n.toLocaleString();
 }
 
-function dateKey(ts: string | null | undefined): string {
+type BucketGranularity = "5min" | "hour" | "day";
+
+function dateKey(ts: string | null | undefined, granularity: BucketGranularity = "day"): string {
   if (!ts) return "unknown";
+  if (granularity === "5min") {
+    // Round down to nearest 5-minute: "YYYY-MM-DDTHH:M0" or "YYYY-MM-DDTHH:M5"
+    const base = ts.slice(0, 16); // "YYYY-MM-DDTHH:MM"
+    const min = parseInt(base.slice(14, 16), 10);
+    const rounded = Math.floor(min / 5) * 5;
+    return base.slice(0, 14) + String(rounded).padStart(2, "0");
+  }
+  if (granularity === "hour") return ts.slice(0, 13); // "YYYY-MM-DDTHH"
   return ts.slice(0, 10); // "YYYY-MM-DD"
 }
 
@@ -119,13 +158,42 @@ function InlineTimeline({ sessionId }: { sessionId: string }) {
 /* ── main page ── */
 
 export default function SessionsPage() {
-  const { data, isLoading, error } = useSessions();
+  const { days } = useTimeRange();
+  const { data, isLoading, error } = useSessions(50, 0, days);
+  const { data: turnaround } = useTurnaroundSummary();
+  const { data: turnaroundDetail } = useTurnaroundDetail();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
+  const granularity: BucketGranularity = days < 1 ? "5min" : days <= 1 ? "hour" : "day";
 
   console.log("[SessionsPage] render", { isLoading, error, sessionCount: data?.sessions?.length });
 
   const sessions = data?.sessions || [];
+
+  // Per-session turnaround stats derived from detail data
+  const sessionTurnaround = useMemo(() => {
+    const prompts = turnaroundDetail?.prompts || [];
+    const map = new Map<string, { avg: number; max: number; totalTools: number; totalApi: number; count: number }>();
+    for (const p of prompts) {
+      const sid = p.session_id;
+      if (!sid) continue;
+      const sec = parseFloat(p.agent_work_sec || "0");
+      const tools = parseInt(p.tool_calls || "0", 10);
+      const api = parseInt(p.api_calls || "0", 10);
+      if (!map.has(sid)) map.set(sid, { avg: 0, max: 0, totalTools: 0, totalApi: 0, count: 0 });
+      const s = map.get(sid)!;
+      s.count++;
+      s.avg += sec;
+      s.max = Math.max(s.max, sec);
+      s.totalTools += tools;
+      s.totalApi += api;
+    }
+    // finalize averages
+    for (const v of map.values()) {
+      if (v.count > 0) v.avg = v.avg / v.count;
+    }
+    return map;
+  }, [turnaroundDetail]);
 
   // Build metadata for each unique session: short key, label, color
   const sessionMetaList = useMemo<SessionMeta[]>(() => {
@@ -169,24 +237,28 @@ export default function SessionsPage() {
   const sessionsByDate = useMemo(() => {
     const m = new Map<string, SessionSummary[]>();
     for (const s of sessions) {
-      const dk = dateKey(s.start_time);
+      const dk = dateKey(s.start_time, granularity);
       if (!m.has(dk)) m.set(dk, []);
       m.get(dk)!.push(s);
     }
     return m;
-  }, [sessions]);
+  }, [sessions, granularity]);
 
   // Chart data: one row per date, each session's tokens as a short-keyed property
   const chartData = useMemo<ChartRow[]>(() => {
     const rowMap = new Map<string, ChartRow>();
 
     for (const s of sessions) {
-      const dk = dateKey(s.start_time);
+      const dk = dateKey(s.start_time, granularity);
       if (!rowMap.has(dk)) {
-        const d = new Date(dk + "T00:00:00");
+        const displayDate = granularity === "5min"
+          ? dk.slice(11, 16)  // "HH:MM"
+          : granularity === "hour"
+          ? dk.slice(11, 13) + ":00"
+          : new Date(dk + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
         rowMap.set(dk, {
           date: dk,
-          displayDate: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          displayDate,
           session_count: 0,
         });
       }
@@ -206,7 +278,7 @@ export default function SessionsPage() {
     return Array.from(rowMap.values()).sort((a, b) =>
       (a.date as string).localeCompare(b.date as string)
     );
-  }, [sessions, sessionMetaById]);
+  }, [sessions, sessionMetaById, granularity]);
 
   // Filter sessions based on selected date
   const filteredSessions = useMemo(() => {
@@ -256,6 +328,32 @@ export default function SessionsPage() {
         </Text>
       </Box>
 
+      {/* Turnaround Summary Cards */}
+      {turnaround && (
+        <HStack spacing={4} mb={6} flexWrap="wrap">
+          <StatCard
+            label="Avg Turnaround"
+            value={formatSec(turnaround.avg_turnaround_sec)}
+            sub={`Median: ${formatSec(turnaround.p50_turnaround_sec)}`}
+          />
+          <StatCard
+            label="P95 Turnaround"
+            value={formatSec(turnaround.p95_turnaround_sec)}
+            sub={`Max: ${formatSec(turnaround.max_turnaround_sec)}`}
+          />
+          <StatCard
+            label="Avg Tool Calls / Prompt"
+            value={turnaround.avg_tool_calls ?? "-"}
+            sub={`API calls: ${turnaround.avg_api_calls ?? "-"}`}
+          />
+          <StatCard
+            label="Total Prompts Analyzed"
+            value={parseInt(turnaround.total_prompts || "0", 10).toLocaleString()}
+            sub={`Across ${turnaround.total_sessions ?? "-"} sessions`}
+          />
+        </HStack>
+      )}
+
       {isLoading && (
         <Center py={8}>
           <Spinner color="brand.500" />
@@ -276,7 +374,7 @@ export default function SessionsPage() {
           >
             <HStack justify="space-between" mb={3}>
               <Text fontSize="sm" fontWeight="600" color="gray.700">
-                Token Usage by Day (stacked by session)
+                Token Usage by {granularity === "5min" ? "5 Min" : granularity === "hour" ? "Hour" : "Day"} (stacked by session)
               </Text>
               {selectedDate && (
                 <Button
@@ -327,11 +425,9 @@ export default function SessionsPage() {
           {selectedDate && (
             <HStack spacing={2}>
               <Badge variant="subtle" colorScheme="brand" fontSize="xs" px={2} py={1}>
-                Filtered: {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", {
-                  weekday: "short",
-                  month: "short",
-                  day: "numeric",
-                })}
+                Filtered: {granularity === "day"
+                  ? new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+                  : selectedDate.slice(11)}
               </Badge>
               <Text fontSize="xs" color="gray.500">
                 {filteredSessions.length} session{filteredSessions.length !== 1 ? "s" : ""}
@@ -352,6 +448,7 @@ export default function SessionsPage() {
                     onClick={() =>
                       setExpandedSession(isExpanded ? null : sid)
                     }
+                    turnaround={sessionTurnaround.get(sid)}
                   />
                   <Collapse in={isExpanded} animateOpacity>
                     <Box

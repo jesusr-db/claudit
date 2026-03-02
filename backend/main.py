@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
-from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router
+from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router, mcp_servers_router, kpis_router
 
 app = FastAPI(
     title="Claudit Observability",
@@ -23,6 +23,8 @@ app.include_router(metrics_router)
 app.include_router(sessions_router)
 app.include_router(mcp_tools_router)
 app.include_router(platform_router)
+app.include_router(mcp_servers_router)
+app.include_router(kpis_router)
 
 
 @app.get("/health")

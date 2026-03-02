@@ -18,6 +18,12 @@ const McpServerDetailPage = lazy(
 const PlatformPage = lazy(
   () => import("@/views/platform/PlatformPage")
 );
+const McpServersPage = lazy(
+  () => import("@/views/mcp-servers/McpServersPage")
+);
+const KpiHubPage = lazy(
+  () => import("@/views/kpis/KpiHubPage")
+);
 
 export interface ViewEntry {
   id: string;
@@ -52,14 +58,27 @@ export const viewRegistry: ViewEntry[] = [
     id: "mcp-tools",
     path: "/mcp-tools",
     component: McpToolsPage,
-    label: "MCP Tools",
-    nav: true,
+    nav: false,
   },
   {
     id: "mcp-server-detail",
     path: "/mcp-tools/:server",
     component: McpServerDetailPage,
     nav: false,
+  },
+  {
+    id: "mcp-servers",
+    path: "/mcp-servers",
+    component: McpServersPage,
+    label: "MCP Servers",
+    nav: true,
+  },
+  {
+    id: "kpis",
+    path: "/kpis",
+    component: KpiHubPage,
+    label: "KPIs",
+    nav: true,
   },
   {
     id: "platform",
