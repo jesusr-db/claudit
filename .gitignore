@@ -29,3 +29,6 @@ node_modules/
 
 # OS
 .DS_Store
+
+# Context anchor (volatile session state, not for version control)
+.claude/context-anchor.md
