@@ -19,10 +19,22 @@ resources:
             value: ${var.schema}
           - name: SQL_WAREHOUSE_ID
             value: ${var.warehouse_id}
+          - name: LAKEBASE_PROJECT_ID
+            value: ${var.lakebase_project}
+          - name: LAKEBASE_BRANCH
+            value: ${var.lakebase_branch}
+          - name: LAKEBASE_ENDPOINT
+            value: ${var.lakebase_endpoint}
+          - name: LAKEBASE_DATABASE
+            value: ${var.lakebase_database}
       resources:
         - name: sql_warehouse
           sql_warehouse:
             id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: lakebase
+          serving_endpoint:
+            name: ${var.lakebase_project}
             permission: CAN_USE
       permissions:
         - user_name: ${workspace.current_user.userName}

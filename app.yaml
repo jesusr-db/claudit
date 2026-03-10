@@ -13,3 +13,11 @@ env:
     value: zerobus
   - name: SQL_WAREHOUSE_ID
     value: 5067b513037fbf07
+  - name: LAKEBASE_PROJECT_ID
+    value: claudit-otel
+  - name: LAKEBASE_BRANCH
+    value: production
+  - name: LAKEBASE_ENDPOINT
+    value: primary
+  - name: LAKEBASE_DATABASE
+    value: claudit

@@ -7,12 +7,24 @@ include:
 variables:
   catalog:
     description: "Unity Catalog containing OTEL tables"
-    default: jmr_demo
+    default: vdm_classic_rikfy0_catalog
   schema:
     description: "Schema containing OTEL tables"
     default: zerobus
   warehouse_id:
     description: "SQL Warehouse ID for app queries"
+  lakebase_project:
+    description: "Lakebase project ID for OTEL data"
+    default: claudit-otel
+  lakebase_branch:
+    description: "Lakebase branch for OTEL data"
+    default: production
+  lakebase_endpoint:
+    description: "Lakebase endpoint for OTEL data"
+    default: primary
+  lakebase_database:
+    description: "Lakebase database for OTEL data"
+    default: claudit
 
 targets:
   dev:
@@ -21,9 +33,13 @@ targets:
     workspace:
       profile: DEFAULT
     variables:
-      catalog: jmr_demo
+      catalog: vdm_classic_rikfy0_catalog
       schema: zerobus
       warehouse_id: 5067b513037fbf07
+      lakebase_project: claudit-otel
+      lakebase_branch: production
+      lakebase_endpoint: primary
+      lakebase_database: claudit
 
   prod:
     mode: production
