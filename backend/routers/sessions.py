@@ -1,16 +1,11 @@
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query
-from backend.config import settings
 from backend.services.query_service import QueryService
-from backend.services.sql_executor import SqlExecutor
+from backend.executors import get_pg_executor
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 query_service = QueryService()
-
-
-def get_executor() -> SqlExecutor:
-    return SqlExecutor(warehouse_id=settings.sql_warehouse_id)
 
 
 @router.get("")
@@ -23,14 +18,14 @@ async def list_sessions(
     query = query_service.build_sessions_list_query(
         limit=limit, offset=offset, user_id=user_id, days=days
     )
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"sessions": rows}
 
 
 @router.get("/turnaround/summary")
 async def turnaround_summary():
     query = query_service.build_turnaround_summary()
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return rows[0] if rows else {}
 
 
@@ -42,14 +37,14 @@ async def turnaround_detail(
     query = query_service.build_turnaround_by_session(
         session_id=session_id, limit=limit
     )
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"prompts": rows}
 
 
 @router.get("/{session_id}")
 async def get_session(session_id: str):
     query = query_service.build_session_detail_query(session_id=session_id)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     if not rows:
         raise HTTPException(status_code=404, detail="Session not found")
     return rows[0]
@@ -63,7 +58,7 @@ async def get_session_timeline(
     query = query_service.build_session_timeline_query(
         session_id=session_id, event_names=event_names
     )
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"session_id": session_id, "events": rows}
 
 
@@ -72,5 +67,5 @@ async def get_prompt_events(session_id: str, prompt_id: str):
     query = query_service.build_prompt_events_query(
         session_id=session_id, prompt_id=prompt_id
     )
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"session_id": session_id, "prompt_id": prompt_id, "events": rows}

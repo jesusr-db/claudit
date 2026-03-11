@@ -1,16 +1,11 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from backend.config import settings
 from backend.services.mcp_query_service import McpQueryService
-from backend.services.sql_executor import SqlExecutor
+from backend.executors import get_pg_executor
 
 router = APIRouter(prefix="/api/v1/mcp-servers", tags=["mcp-servers"])
 
 query_service = McpQueryService()
-
-
-def get_executor() -> SqlExecutor:
-    return SqlExecutor(warehouse_id=settings.sql_warehouse_id)
 
 
 @router.get("/summary")
@@ -19,7 +14,7 @@ async def get_server_summary(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_server_summary(server=server, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"servers": rows}
 
 
@@ -29,7 +24,7 @@ async def get_server_detail(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_server_detail(server=server, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     # Reshape flat UNION ALL rows into structured sections
     tool_calls = []
     tool_latency = []
@@ -72,7 +67,7 @@ async def get_tool_stats(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_tool_stats(server=server, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"tools": rows}
 
 
@@ -82,7 +77,7 @@ async def get_tool_latency_timeline(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_tool_latency_over_time(server=server, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"timeline": rows}
 
 
@@ -92,7 +87,7 @@ async def get_http_outbound_summary(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_http_outbound_summary(server=server, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"http": rows}
 
 
@@ -103,7 +98,7 @@ async def get_http_outbound_detail(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_http_outbound_detail(server=server, limit=limit, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"calls": rows}
 
 
@@ -114,7 +109,7 @@ async def get_tool_audit(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_tool_invocations(server=server, limit=limit, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"invocations": rows}
 
 
@@ -125,7 +120,7 @@ async def get_error_events(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_error_events(server=server, limit=limit, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"errors": rows}
 
 
@@ -136,5 +131,5 @@ async def get_server_logs(
     days: Optional[float] = Query(None, ge=0.01, le=365),
 ):
     query = query_service.build_server_logs(server=server, limit=limit, days=days)
-    rows = get_executor().execute(query)
+    rows = get_pg_executor().execute(query)
     return {"logs": rows}

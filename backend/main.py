@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router, mcp_servers_router, kpis_router
+from backend.executors import get_pg_executor
 
 app = FastAPI(
     title="Claudit Observability",
@@ -29,7 +30,23 @@ app.include_router(kpis_router)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    try:
+        pg = get_pg_executor()
+        pg.execute("SELECT 1")
+        pg_status = "connected"
+    except Exception as e:
+        pg_status = f"error: {e}"
+    return {"status": "healthy", "lakebase": pg_status}
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        from backend.executors import _pg_executor
+        if _pg_executor is not None:
+            _pg_executor.close()
+    except Exception:
+        pass
 
 
 # Serve frontend static files in production
