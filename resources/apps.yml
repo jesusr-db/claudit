@@ -33,7 +33,7 @@ resources:
             id: ${var.warehouse_id}
             permission: CAN_USE
         - name: lakebase
-          serving_endpoint:
+          database:
             name: ${var.lakebase_project}
             permission: CAN_USE
       permissions:
