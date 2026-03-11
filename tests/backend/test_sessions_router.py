@@ -5,8 +5,8 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def mock_executor():
-    with patch("backend.routers.sessions.get_pg_executor") as mock_sess, \
-         patch("backend.routers.metrics.get_pg_executor") as mock_met, \
+    with patch("backend.routers.sessions.require_pg_executor") as mock_sess, \
+         patch("backend.routers.metrics.require_pg_executor") as mock_met, \
          patch("backend.routers.platform.get_sql_executor") as mock_plat, \
          patch("backend.main.get_pg_executor") as mock_health:
         executor = MagicMock()
