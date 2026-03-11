@@ -1,0 +1,16 @@
+resources:
+  jobs:
+    lakebase_teardown:
+      name: "[${bundle.target} ${workspace.current_user.short_name}] claudit-lakebase-teardown"
+      description: "Removes Lakebase artifacts not managed by DAB (synced tables, PG views, PG database)"
+      tags:
+        app: claudit
+      tasks:
+        - task_key: teardown
+          notebook_task:
+            notebook_path: ../src/notebooks/lakebase_teardown.py
+            base_parameters:
+              catalog: ${var.catalog}
+              lakebase_instance: ${var.lakebase_instance}
+              lakebase_database: ${var.lakebase_database}
+              delete_instance: "no"
