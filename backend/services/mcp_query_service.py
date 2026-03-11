@@ -1,35 +1,36 @@
 from typing import Optional
 
+from backend.config import settings
+
 
 class McpQueryService:
-    """Builds SQL queries against MCP server OTEL tables (jmr_demo.default.*).
+    """Builds SQL queries against MCP server OTEL tables (PostgreSQL / Lakebase).
 
     Actual schema notes (discovered from live data):
     - Span kind values: SPAN_KIND_INTERNAL (tool spans), SPAN_KIND_CLIENT (HTTP)
     - HTTP attributes (old OTEL conventions): http.method, http.url, http.status_code
-    - status struct: {code, message} — code is typically null for success
-    - Metric tool attributes: sum.attributes['tool'], sum.attributes['status']
+    - status column: JSONB with keys 'code' and 'message' — code is typically null for success
+    - Metric tool attributes: sum_attributes->>'tool', sum_attributes->>'status'
     """
 
-    def __init__(self, catalog: str, schema: str):
-        self.catalog = catalog
-        self.schema = schema
+    def __init__(self):
+        pass  # Uses settings directly
 
     @property
     def spans_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.otel_spans"
+        return settings.mcp_otel_spans_table
 
     @property
     def metrics_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.otel_metrics"
+        return settings.mcp_otel_metrics_table
 
     @property
     def logs_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.otel_logs"
+        return settings.mcp_otel_logs_table
 
     def _server_filter(self, server: Optional[str]) -> str:
         if server:
-            return f"AND resource.attributes['service.name'] = '{server}'"
+            return f"AND resource_attributes->>'service.name' = '{server}'"
         return ""
 
     @staticmethod
@@ -39,8 +40,8 @@ class McpQueryService:
             return ""
         if days < 1:
             minutes = max(int(days * 24 * 60), 5)
-            return f"AND TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {minutes} MINUTES"
-        return f"AND TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {int(days)} DAYS"
+            return f"AND to_timestamp(start_time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{minutes} minutes'"
+        return f"AND to_timestamp(start_time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{int(days)} days'"
 
     @staticmethod
     def _time_filter_logs(days: Optional[float]) -> str:
@@ -49,8 +50,8 @@ class McpQueryService:
             return ""
         if days < 1:
             minutes = max(int(days * 24 * 60), 5)
-            return f"AND TIMESTAMP_MICROS(CAST(time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {minutes} MINUTES"
-        return f"AND TIMESTAMP_MICROS(CAST(time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {int(days)} DAYS"
+            return f"AND to_timestamp(time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{minutes} minutes'"
+        return f"AND to_timestamp(time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{int(days)} days'"
 
     @staticmethod
     def _time_filter_metrics(days: Optional[float]) -> str:
@@ -59,8 +60,8 @@ class McpQueryService:
             return ""
         if days < 1:
             minutes = max(int(days * 24 * 60), 5)
-            return f"AND TIMESTAMP_MICROS(CAST(time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {minutes} MINUTES"
-        return f"AND TIMESTAMP_MICROS(CAST(time_unix_nano / 1000 AS BIGINT)) >= CURRENT_TIMESTAMP() - INTERVAL {int(days)} DAYS"
+            return f"AND to_timestamp(time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{minutes} minutes'"
+        return f"AND to_timestamp(time_unix_nano::bigint / 1000000000.0) >= CURRENT_TIMESTAMP - interval '{int(days)} days'"
 
     # ── Operations Queries ──
 
@@ -71,7 +72,7 @@ class McpQueryService:
         return f"""
             WITH tool_counts AS (
                 SELECT
-                    resource.attributes['service.name'] as service_name,
+                    resource_attributes->>'service.name' as service_name,
                     COUNT(DISTINCT name) as tool_count,
                     COUNT(*) as tool_spans
                 FROM {self.spans_table}
@@ -79,33 +80,33 @@ class McpQueryService:
                   AND name LIKE 'mcp.tool.%'
                   {self._server_filter(server)}
                   {tf_spans}
-                GROUP BY resource.attributes['service.name']
+                GROUP BY resource_attributes->>'service.name'
             ),
             http_counts AS (
                 SELECT
-                    resource.attributes['service.name'] as service_name,
+                    resource_attributes->>'service.name' as service_name,
                     COUNT(*) as http_spans
                 FROM {self.spans_table}
                 WHERE kind = 'SPAN_KIND_CLIENT'
                   {self._server_filter(server)}
                   {tf_spans}
-                GROUP BY resource.attributes['service.name']
+                GROUP BY resource_attributes->>'service.name'
             ),
             all_spans AS (
                 SELECT
-                    resource.attributes['service.name'] as service_name,
+                    resource_attributes->>'service.name' as service_name,
                     COUNT(*) as total_spans
                 FROM {self.spans_table}
                 WHERE 1=1 {self._server_filter(server)} {tf_spans}
-                GROUP BY resource.attributes['service.name']
+                GROUP BY resource_attributes->>'service.name'
             ),
             log_counts AS (
                 SELECT
-                    resource.attributes['service.name'] as service_name,
+                    resource_attributes->>'service.name' as service_name,
                     COUNT(*) as total_log_entries
                 FROM {self.logs_table}
                 WHERE 1=1 {self._server_filter(server)} {tf_logs}
-                GROUP BY resource.attributes['service.name']
+                GROUP BY resource_attributes->>'service.name'
             )
             SELECT
                 a.service_name,
@@ -127,17 +128,17 @@ class McpQueryService:
             SELECT
                 name as tool_name,
                 COUNT(*) as call_count,
-                SUM(CASE WHEN status.code IS NULL OR status.code != 'ERROR' THEN 1 ELSE 0 END) as success_count,
-                SUM(CASE WHEN status.code = 'ERROR' THEN 1 ELSE 0 END) as failure_count,
+                SUM(CASE WHEN status->>'code' IS NULL OR status->>'code' != 'ERROR' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN status->>'code' = 'ERROR' THEN 1 ELSE 0 END) as failure_count,
                 ROUND(AVG(
                     (end_time_unix_nano - start_time_unix_nano) / 1e6
-                ), 1) as avg_duration_ms,
-                ROUND(PERCENTILE(
-                    (end_time_unix_nano - start_time_unix_nano) / 1e6, 0.5
-                ), 1) as p50_duration_ms,
-                ROUND(PERCENTILE(
-                    (end_time_unix_nano - start_time_unix_nano) / 1e6, 0.95
-                ), 1) as p95_duration_ms
+                )::numeric, 1) as avg_duration_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
+                    (end_time_unix_nano - start_time_unix_nano) / 1e6
+                )::numeric, 1) as p50_duration_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY
+                    (end_time_unix_nano - start_time_unix_nano) / 1e6
+                )::numeric, 1) as p95_duration_ms
             FROM {self.spans_table}
             WHERE kind = 'SPAN_KIND_INTERNAL'
               AND name LIKE 'mcp.tool.%'
@@ -151,22 +152,22 @@ class McpQueryService:
         """Time-bucketed tool latency from spans."""
         return f"""
             SELECT
-                DATE_TRUNC('hour', TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT))) as time_bucket,
+                DATE_TRUNC('hour', to_timestamp(start_time_unix_nano::bigint / 1000000000.0)) as time_bucket,
                 name as tool_name,
                 COUNT(*) as call_count,
                 ROUND(AVG(
                     (end_time_unix_nano - start_time_unix_nano) / 1e6
-                ), 1) as avg_duration_ms,
-                ROUND(PERCENTILE(
-                    (end_time_unix_nano - start_time_unix_nano) / 1e6, 0.95
-                ), 1) as p95_duration_ms
+                )::numeric, 1) as avg_duration_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY
+                    (end_time_unix_nano - start_time_unix_nano) / 1e6
+                )::numeric, 1) as p95_duration_ms
             FROM {self.spans_table}
             WHERE kind = 'SPAN_KIND_INTERNAL'
               AND name LIKE 'mcp.tool.%'
               {self._server_filter(server)}
               {self._time_filter_spans(days)}
             GROUP BY
-                DATE_TRUNC('hour', TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT))),
+                DATE_TRUNC('hour', to_timestamp(start_time_unix_nano::bigint / 1000000000.0)),
                 name
             ORDER BY time_bucket DESC
         """.strip()
@@ -175,25 +176,25 @@ class McpQueryService:
         """Outbound HTTP calls grouped by URL domain + method + status code."""
         return f"""
             SELECT
-                REGEXP_EXTRACT(attributes['http.url'], '^(https?://[^/]+)') as domain,
-                attributes['http.method'] as method,
-                attributes['http.status_code'] as status_code,
+                (regexp_match(attributes->>'http.url', '^(https?://[^/]+)'))[1] as domain,
+                attributes->>'http.method' as method,
+                attributes->>'http.status_code' as status_code,
                 COUNT(*) as call_count,
                 ROUND(AVG(
                     (end_time_unix_nano - start_time_unix_nano) / 1e6
-                ), 1) as avg_duration_ms,
-                ROUND(PERCENTILE(
-                    (end_time_unix_nano - start_time_unix_nano) / 1e6, 0.95
-                ), 1) as p95_duration_ms
+                )::numeric, 1) as avg_duration_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY
+                    (end_time_unix_nano - start_time_unix_nano) / 1e6
+                )::numeric, 1) as p95_duration_ms
             FROM {self.spans_table}
             WHERE kind = 'SPAN_KIND_CLIENT'
-              AND attributes['http.method'] IS NOT NULL
+              AND attributes->>'http.method' IS NOT NULL
               {self._server_filter(server)}
               {self._time_filter_spans(days)}
             GROUP BY
-                REGEXP_EXTRACT(attributes['http.url'], '^(https?://[^/]+)'),
-                attributes['http.method'],
-                attributes['http.status_code']
+                (regexp_match(attributes->>'http.url', '^(https?://[^/]+)'))[1],
+                attributes->>'http.method',
+                attributes->>'http.status_code'
             ORDER BY call_count DESC
         """.strip()
 
@@ -204,60 +205,60 @@ class McpQueryService:
         return f"""
             WITH tool_calls AS (
                 SELECT
-                    sum.attributes['tool'] as tool_name,
-                    sum.attributes['status'] as call_status,
-                    SUM(CAST(sum.value AS DOUBLE)) as total_calls
+                    sum_attributes->>'tool' as tool_name,
+                    sum_attributes->>'status' as call_status,
+                    SUM((sum_value)::double precision) as total_calls
                 FROM {self.metrics_table}
                 WHERE name = 'mcp.tool.calls'
                   {self._server_filter(server)}
                   {self._time_filter_metrics(days)}
-                GROUP BY sum.attributes['tool'], sum.attributes['status']
+                GROUP BY sum_attributes->>'tool', sum_attributes->>'status'
             ),
             tool_latency AS (
                 SELECT
-                    histogram.attributes['tool'] as tool_name,
-                    SUM(histogram.count) as latency_samples,
-                    ROUND(SUM(histogram.sum) / NULLIF(SUM(histogram.count), 0), 1) as avg_latency_ms,
-                    ROUND(MIN(histogram.min), 1) as min_latency_ms,
-                    ROUND(MAX(histogram.max), 1) as max_latency_ms
+                    histogram_attributes->>'tool' as tool_name,
+                    SUM(histogram_count) as latency_samples,
+                    ROUND((SUM(histogram_sum) / NULLIF(SUM(histogram_count), 0))::numeric, 1) as avg_latency_ms,
+                    ROUND(MIN(histogram_min)::numeric, 1) as min_latency_ms,
+                    ROUND(MAX(histogram_max)::numeric, 1) as max_latency_ms
                 FROM {self.metrics_table}
                 WHERE name = 'mcp.tool.latency'
                   {self._server_filter(server)}
                   {self._time_filter_metrics(days)}
-                GROUP BY histogram.attributes['tool']
+                GROUP BY histogram_attributes->>'tool'
             ),
             http_duration AS (
                 SELECT
-                    histogram.attributes['http.method'] as method,
-                    histogram.attributes['http.status_code'] as status_code,
-                    SUM(histogram.count) as http_samples,
-                    ROUND(SUM(histogram.sum) / NULLIF(SUM(histogram.count), 0), 1) as avg_http_ms,
-                    ROUND(MIN(histogram.min), 1) as min_http_ms,
-                    ROUND(MAX(histogram.max), 1) as max_http_ms
+                    histogram_attributes->>'http.method' as method,
+                    histogram_attributes->>'http.status_code' as status_code,
+                    SUM(histogram_count) as http_samples,
+                    ROUND((SUM(histogram_sum) / NULLIF(SUM(histogram_count), 0))::numeric, 1) as avg_http_ms,
+                    ROUND(MIN(histogram_min)::numeric, 1) as min_http_ms,
+                    ROUND(MAX(histogram_max)::numeric, 1) as max_http_ms
                 FROM {self.metrics_table}
                 WHERE name = 'http.client.duration'
                   {self._server_filter(server)}
                   {self._time_filter_metrics(days)}
-                GROUP BY histogram.attributes['http.method'], histogram.attributes['http.status_code']
+                GROUP BY histogram_attributes->>'http.method', histogram_attributes->>'http.status_code'
             )
             SELECT 'tool_calls' as section, tc.tool_name, tc.call_status,
-                   CAST(tc.total_calls AS STRING) as value1,
+                   (tc.total_calls)::text as value1,
                    NULL as value2, NULL as value3, NULL as value4, NULL as value5
             FROM tool_calls tc
             UNION ALL
             SELECT 'tool_latency' as section, tl.tool_name, NULL as call_status,
-                   CAST(tl.latency_samples AS STRING) as value1,
-                   CAST(tl.avg_latency_ms AS STRING) as value2,
-                   CAST(tl.min_latency_ms AS STRING) as value3,
-                   CAST(tl.max_latency_ms AS STRING) as value4,
+                   (tl.latency_samples)::text as value1,
+                   (tl.avg_latency_ms)::text as value2,
+                   (tl.min_latency_ms)::text as value3,
+                   (tl.max_latency_ms)::text as value4,
                    NULL as value5
             FROM tool_latency tl
             UNION ALL
             SELECT 'http_duration' as section, hd.method as tool_name, hd.status_code as call_status,
-                   CAST(hd.http_samples AS STRING) as value1,
-                   CAST(hd.avg_http_ms AS STRING) as value2,
-                   CAST(hd.min_http_ms AS STRING) as value3,
-                   CAST(hd.max_http_ms AS STRING) as value4,
+                   (hd.http_samples)::text as value1,
+                   (hd.avg_http_ms)::text as value2,
+                   (hd.min_http_ms)::text as value3,
+                   (hd.max_http_ms)::text as value4,
                    NULL as value5
             FROM http_duration hd
         """.strip()
@@ -270,14 +271,14 @@ class McpQueryService:
         """Every outbound HTTP span: timestamp, method, full URL, status, duration."""
         return f"""
             SELECT
-                TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT)) as timestamp,
-                attributes['http.method'] as method,
-                attributes['http.url'] as url,
-                attributes['http.status_code'] as status_code,
-                ROUND((end_time_unix_nano - start_time_unix_nano) / 1e6, 1) as duration_ms
+                to_timestamp(start_time_unix_nano::bigint / 1000000000.0) as timestamp,
+                attributes->>'http.method' as method,
+                attributes->>'http.url' as url,
+                attributes->>'http.status_code' as status_code,
+                ROUND(((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as duration_ms
             FROM {self.spans_table}
             WHERE kind = 'SPAN_KIND_CLIENT'
-              AND attributes['http.method'] IS NOT NULL
+              AND attributes->>'http.method' IS NOT NULL
               {self._server_filter(server)}
               {self._time_filter_spans(days)}
             ORDER BY start_time_unix_nano DESC
@@ -290,10 +291,10 @@ class McpQueryService:
         """Every tool span: timestamp, tool name, status, duration, trace_id."""
         return f"""
             SELECT
-                TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT)) as timestamp,
+                to_timestamp(start_time_unix_nano::bigint / 1000000000.0) as timestamp,
                 name as tool_name,
-                COALESCE(status.code, 'OK') as status,
-                ROUND((end_time_unix_nano - start_time_unix_nano) / 1e6, 1) as duration_ms,
+                COALESCE(status->>'code', 'OK') as status,
+                ROUND(((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as duration_ms,
                 trace_id
             FROM {self.spans_table}
             WHERE kind = 'SPAN_KIND_INTERNAL'
@@ -310,18 +311,18 @@ class McpQueryService:
         """Spans with non-success status or HTTP 4xx/5xx."""
         return f"""
             SELECT
-                TIMESTAMP_MICROS(CAST(start_time_unix_nano / 1000 AS BIGINT)) as timestamp,
+                to_timestamp(start_time_unix_nano::bigint / 1000000000.0) as timestamp,
                 name as span_name,
                 kind,
-                COALESCE(status.code, 'OK') as status,
-                status.message as status_message,
-                attributes['http.status_code'] as http_status,
-                ROUND((end_time_unix_nano - start_time_unix_nano) / 1e6, 1) as duration_ms,
+                COALESCE(status->>'code', 'OK') as status,
+                status->>'message' as status_message,
+                attributes->>'http.status_code' as http_status,
+                ROUND(((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as duration_ms,
                 trace_id
             FROM {self.spans_table}
             WHERE (
-                status.code = 'ERROR'
-                OR CAST(attributes['http.status_code'] AS INT) >= 400
+                status->>'code' = 'ERROR'
+                OR (attributes->>'http.status_code')::int >= 400
             )
             {self._server_filter(server)}
             {self._time_filter_spans(days)}
@@ -338,10 +339,10 @@ class McpQueryService:
         return f"""
             WITH raw_logs AS (
                 SELECT
-                    CAST(DATE_FORMAT(TIMESTAMP_MICROS(CAST(time_unix_nano / 1000 AS BIGINT)), 'yyyy-MM-dd HH:mm:ss') AS STRING) as timestamp,
+                    to_char(to_timestamp(time_unix_nano::bigint / 1000000000.0), 'YYYY-MM-DD HH24:MI:SS') as timestamp,
                     severity_text as severity,
                     body as body,
-                    TO_JSON(attributes) as attributes,
+                    attributes::text as attributes,
                     trace_id,
                     span_id
                 FROM {self.logs_table}

@@ -6,10 +6,7 @@ from backend.services.sql_executor import SqlExecutor
 
 router = APIRouter(prefix="/api/v1/mcp-servers", tags=["mcp-servers"])
 
-query_service = McpQueryService(
-    catalog=settings.catalog,
-    schema=settings.mcp_schema_name,
-)
+query_service = McpQueryService()
 
 
 def get_executor() -> SqlExecutor:
