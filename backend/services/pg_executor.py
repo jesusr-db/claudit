@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import uuid
 from typing import List, Dict, Any, Optional
 
 from databricks.sdk import WorkspaceClient
@@ -16,7 +17,7 @@ _STARTUP_BACKOFF_BASE = 2  # seconds
 
 
 class PgExecutor:
-    """Executes SQL against Lakebase (PostgreSQL-compatible) via psycopg v3 connection pool.
+    """Executes SQL against Lakebase Provisioned (PostgreSQL) via psycopg v3 connection pool.
 
     Same interface as SqlExecutor: execute(query) -> List[Dict[str, Any]].
     Uses OAuth tokens from Databricks SDK, refreshed every 50 minutes in the background.
@@ -38,45 +39,28 @@ class PgExecutor:
         return self._client
 
     def _get_endpoint_conninfo(self) -> str:
-        """Retrieve endpoint hostname/port from Databricks SDK and build conninfo string."""
-        endpoint = self.client.database.get_endpoint(
-            project_id=settings.lakebase_project_id,
-            branch=settings.lakebase_branch,
-            endpoint_name=settings.lakebase_endpoint,
-        )
-        host = endpoint.host
-        port = endpoint.port if endpoint.port else 5432
+        """Retrieve instance hostname from Databricks SDK and build conninfo string."""
+        instance = self.client.database.get_database_instance(settings.lakebase_instance_name)
+        host = instance.read_write_dns
         dbname = settings.lakebase_database
-        # User is typically "token" for OAuth token auth; password is injected per-connection
-        return f"host={host} port={port} dbname={dbname} user=token sslmode=require"
+        user = self.client.current_user.me().user_name
+        return f"host={host} port=5432 dbname={dbname} user={user} sslmode=require"
 
     def _generate_token(self) -> str:
         """Generate a new OAuth token via Databricks SDK."""
-        credential = self.client.database.generate_database_credential()
-        return credential.access_token
-
-    def _configure_connection(self, conn) -> None:
-        """psycopg pool configure callback — injects current token as password."""
-        with self._lock:
-            token = self._token
-        if token:
-            conn.autocommit = True
-            # Set the password for the current session via SET command is not available in PG;
-            # instead we close and reconnect with updated conninfo when token changes.
-            # Here we patch the underlying connection's password for this connection object.
-            # psycopg v3: password is set at connect time via conninfo; for pool we use
-            # the `kwargs` override pattern by passing password in configure.
-            conn.execute(f"SET SESSION AUTHORIZATION DEFAULT")  # no-op keepalive
-        # NOTE: The actual password injection happens via the pool's conninfo at creation.
-        # Token rotation is handled by recreating the pool (see _refresh_token).
+        credential = self.client.database.generate_database_credential(
+            request_id=str(uuid.uuid4()),
+            instance_names=[settings.lakebase_instance_name],
+        )
+        return credential.token
 
     def _create_pool(self, conninfo: str, token: str) -> ConnectionPool:
         """Create a psycopg ConnectionPool with the OAuth token as password."""
         full_conninfo = f"{conninfo} password={token}"
         pool = ConnectionPool(
             conninfo=full_conninfo,
-            min_size=1,
-            max_size=5,
+            min_size=2,
+            max_size=10,
             open=True,
             reconnect_failed=self._on_reconnect_failed,
         )
@@ -166,8 +150,13 @@ class PgExecutor:
         self._refresh_timer.daemon = True
         self._refresh_timer.start()
 
-    def execute(self, query: str) -> List[Dict[str, Any]]:
-        """Execute a SQL query and return rows as a list of dicts."""
+    def execute(self, query: str, timeout_ms: int = 25000) -> List[Dict[str, Any]]:
+        """Execute a SQL query and return rows as a list of dicts.
+
+        Args:
+            timeout_ms: Statement timeout in milliseconds (default 25s).
+                        Prevents queries from running until proxy timeout (30s).
+        """
         with self._lock:
             pool = self._pool
 
@@ -176,6 +165,7 @@ class PgExecutor:
 
         with pool.connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = {timeout_ms}")
                 cur.execute(query)
                 if cur.description is None:
                     return []

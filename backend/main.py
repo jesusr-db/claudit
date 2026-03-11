@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -5,6 +8,8 @@ import os
 
 from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router, mcp_servers_router, kpis_router
 from backend.executors import get_pg_executor
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Claudit Observability",
@@ -30,13 +35,40 @@ app.include_router(kpis_router)
 
 @app.get("/health")
 async def health_check():
-    try:
-        pg = get_pg_executor()
-        pg.execute("SELECT 1")
-        pg_status = "connected"
-    except Exception as e:
-        pg_status = f"error: {e}"
+    pg = get_pg_executor()
+    if pg is None:
+        pg_status = "not_configured"
+    else:
+        try:
+            pg.execute("SELECT 1")
+            pg_status = "connected"
+        except Exception as e:
+            pg_status = f"error: {e}"
     return {"status": "healthy", "lakebase": pg_status}
+
+
+@app.on_event("startup")
+async def warm_cache():
+    """Pre-fetch the most common KPI queries to warm the cache on startup."""
+    pg = get_pg_executor()
+    if pg is None:
+        return
+    try:
+        from backend.routers.kpis import _cached_execute, kpi_service
+        warmup_queries = {
+            "badges:30": kpi_service.build_kpi_badges(days=30),
+            "cost_overview:30": kpi_service.build_cost_overview(days=30),
+            "effectiveness_overview:30": kpi_service.build_effectiveness_overview(days=30),
+            "cost_trend:30": kpi_service.build_cost_trend(days=30),
+        }
+        results = await asyncio.gather(
+            *[_cached_execute(k, q) for k, q in warmup_queries.items()],
+            return_exceptions=True,
+        )
+        ok = sum(1 for r in results if not isinstance(r, Exception))
+        logger.info("Cache warmup: %d/%d queries pre-fetched", ok, len(warmup_queries))
+    except Exception as exc:
+        logger.warning("Cache warmup failed: %s", exc)
 
 
 @app.on_event("shutdown")
