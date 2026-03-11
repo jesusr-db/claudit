@@ -5,9 +5,11 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def mock_executor():
-    with patch("backend.routers.mcp_tools.get_executor") as mock:
+    with patch("backend.routers.mcp_tools.get_pg_executor") as mock, \
+         patch("backend.main.get_pg_executor") as mock_health:
         executor = MagicMock()
         mock.return_value = executor
+        mock_health.return_value = executor
         yield executor
 
 

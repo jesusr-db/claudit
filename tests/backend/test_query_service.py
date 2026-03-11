@@ -4,7 +4,7 @@ from backend.services.query_service import QueryService
 
 @pytest.fixture
 def svc():
-    return QueryService(catalog="jmr_demo", schema="zerobus")
+    return QueryService()
 
 
 def test_build_sessions_list_query(svc):
