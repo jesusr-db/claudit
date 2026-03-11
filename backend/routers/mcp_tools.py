@@ -6,10 +6,7 @@ from backend.services.sql_executor import SqlExecutor
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
-query_service = QueryService(
-    catalog=settings.catalog,
-    schema=settings.schema_name,
-)
+query_service = QueryService()
 
 
 def get_executor() -> SqlExecutor:

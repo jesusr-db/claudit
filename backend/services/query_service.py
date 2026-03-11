@@ -1,27 +1,47 @@
 from typing import Optional, List
 
+from backend.config import settings
+
 
 class QueryService:
     """Builds SQL queries against OTEL source tables directly."""
 
-    def __init__(self, catalog: str, schema: str):
-        self.catalog = catalog
-        self.schema = schema
-
     SERVICE_NAME = "claude-code"
+
+    # Methods that return PostgreSQL queries (for PgExecutor)
+    PG_METHODS = {
+        'build_sessions_list_query', 'build_session_detail_query',
+        'build_session_timeline_query', 'build_prompt_events_query',
+        'build_token_usage_query', 'build_cost_usage_query',
+        'build_tool_stats_query', 'build_error_stats_query',
+        'build_api_performance_query', 'build_tool_performance_query',
+        'build_tool_recent_calls_query', 'build_turnaround_summary',
+        'build_turnaround_by_session', 'build_summary_query',
+    }
+
+    # Methods that return Databricks SQL queries (for SqlExecutor)
+    SQL_METHODS = {
+        'build_billing_daily_query', 'build_billing_summary_query',
+        'build_query_history_stats_query', 'build_query_history_daily_query',
+        'build_ai_gateway_model_stats_query', 'build_ai_gateway_daily_query',
+        'build_ai_gateway_errors_query',
+    }
+
+    def __init__(self):
+        pass  # Uses settings directly
 
     @property
     def logs_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.otel_logs"
+        return settings.otel_logs_table  # "zerobus_otel_logs"
 
     @property
     def metrics_table(self) -> str:
-        return f"{self.catalog}.{self.schema}.otel_metrics"
+        return settings.otel_metrics_table  # "zerobus_otel_metrics"
 
     @property
     def service_filter(self) -> str:
         """Filter otel_logs rows to only the claude-code service."""
-        return f"resource.attributes['service.name'] = '{self.SERVICE_NAME}'"
+        return f"resource_attributes->>'service.name' = '{self.SERVICE_NAME}'"
 
     @staticmethod
     def _days_filter(days: Optional[float]) -> str:
@@ -30,8 +50,8 @@ class QueryService:
             return ""
         if days < 1:
             hours = max(int(days * 24), 1)
-            return f"AND CAST(attributes['event.timestamp'] AS TIMESTAMP) >= CURRENT_TIMESTAMP() - INTERVAL {hours} HOURS"
-        return f"AND attributes['event.timestamp'] >= DATE_SUB(current_date(), {int(days)})"
+            return f"AND (attributes->>'event.timestamp')::timestamp >= CURRENT_TIMESTAMP - interval '{hours} hours'"
+        return f"AND (attributes->>'event.timestamp')::date >= current_date - interval '{int(days)} days'"
 
     def build_sessions_list_query(
         self,
@@ -42,17 +62,17 @@ class QueryService:
     ) -> str:
         conditions = [self.service_filter]
         if user_id:
-            conditions.append(f"attributes['user.id'] = '{user_id}'")
+            conditions.append(f"attributes->>'user.id' = '{user_id}'")
         if days is not None:
             if days < 1:
                 hours = max(int(days * 24), 1)
                 conditions.append(
-                    f"CAST(attributes['event.timestamp'] AS TIMESTAMP) >= CURRENT_TIMESTAMP() - INTERVAL {hours} HOURS"
+                    f"(attributes->>'event.timestamp')::timestamp >= CURRENT_TIMESTAMP - interval '{hours} hours'"
                 )
             else:
                 int_days = int(days)
                 conditions.append(
-                    f"attributes['event.timestamp'] >= DATE_SUB(current_date(), {int_days})"
+                    f"(attributes->>'event.timestamp')::date >= current_date - interval '{int_days} days'"
                 )
 
         where = "WHERE " + " AND ".join(conditions)
@@ -60,27 +80,27 @@ class QueryService:
         return f"""
             WITH session_stats AS (
                 SELECT
-                    attributes['session.id'] as session_id,
-                    attributes['user.id'] as user_id,
-                    MIN(attributes['event.timestamp']) as start_time,
-                    MAX(attributes['event.timestamp']) as end_time,
+                    attributes->>'session.id' as session_id,
+                    attributes->>'user.id' as user_id,
+                    MIN(attributes->>'event.timestamp') as start_time,
+                    MAX(attributes->>'event.timestamp') as end_time,
                     COUNT(*) as event_count,
-                    COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
-                    COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
-                    COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
-                    SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                        THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd,
-                    SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                        THEN CAST(attributes['input_tokens'] AS BIGINT) ELSE 0 END) as total_input_tokens,
-                    SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                        THEN CAST(attributes['output_tokens'] AS BIGINT) ELSE 0 END) as total_output_tokens,
-                    SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                        THEN CAST(attributes['cache_read_tokens'] AS BIGINT) ELSE 0 END) as total_cache_read_tokens,
-                    MIN(CASE WHEN attributes['event.name'] = 'user_prompt'
-                        THEN attributes['prompt'] END) as first_prompt
+                    COUNT(DISTINCT attributes->>'prompt.id') as prompt_count,
+                    COUNT(CASE WHEN attributes->>'event.name' IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
+                    COUNT(CASE WHEN attributes->>'event.name' = 'api_error' THEN 1 END) as errors,
+                    SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                        THEN (attributes->>'cost_usd')::double precision ELSE 0 END) as total_cost_usd,
+                    SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                        THEN (attributes->>'input_tokens')::bigint ELSE 0 END) as total_input_tokens,
+                    SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                        THEN (attributes->>'output_tokens')::bigint ELSE 0 END) as total_output_tokens,
+                    SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                        THEN (attributes->>'cache_read_tokens')::bigint ELSE 0 END) as total_cache_read_tokens,
+                    MIN(CASE WHEN attributes->>'event.name' = 'user_prompt'
+                        THEN attributes->>'prompt' END) as first_prompt
                 FROM {self.logs_table}
                 {where}
-                GROUP BY attributes['session.id'], attributes['user.id']
+                GROUP BY attributes->>'session.id', attributes->>'user.id'
             )
             SELECT * FROM session_stats
             ORDER BY start_time DESC
@@ -91,20 +111,20 @@ class QueryService:
     def build_session_detail_query(self, session_id: str) -> str:
         return f"""
             SELECT
-                attributes['session.id'] as session_id,
-                attributes['user.id'] as user_id,
-                MIN(attributes['event.timestamp']) as start_time,
-                MAX(attributes['event.timestamp']) as end_time,
+                attributes->>'session.id' as session_id,
+                attributes->>'user.id' as user_id,
+                MIN(attributes->>'event.timestamp') as start_time,
+                MAX(attributes->>'event.timestamp') as end_time,
                 COUNT(*) as event_count,
-                COUNT(DISTINCT attributes['prompt.id']) as prompt_count,
-                COUNT(CASE WHEN attributes['event.name'] IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
-                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as errors,
-                SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+                COUNT(DISTINCT attributes->>'prompt.id') as prompt_count,
+                COUNT(CASE WHEN attributes->>'event.name' IN ('tool_decision', 'tool_result') THEN 1 END) as tool_calls,
+                COUNT(CASE WHEN attributes->>'event.name' = 'api_error' THEN 1 END) as errors,
+                SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                    THEN (attributes->>'cost_usd')::double precision ELSE 0 END) as total_cost_usd
             FROM {self.logs_table}
             WHERE {self.service_filter}
-              AND attributes['session.id'] = '{session_id}'
-            GROUP BY attributes['session.id'], attributes['user.id']
+              AND attributes->>'session.id' = '{session_id}'
+            GROUP BY attributes->>'session.id', attributes->>'user.id'
         """.strip()
 
     def build_session_timeline_query(
@@ -112,73 +132,73 @@ class QueryService:
         session_id: str,
         event_names: Optional[List[str]] = None,
     ) -> str:
-        conditions = [self.service_filter, f"attributes['session.id'] = '{session_id}'"]
+        conditions = [self.service_filter, f"attributes->>'session.id' = '{session_id}'"]
 
         if event_names:
             names_str = ", ".join(f"'{n}'" for n in event_names)
-            conditions.append(f"attributes['event.name'] IN ({names_str})")
+            conditions.append(f"attributes->>'event.name' IN ({names_str})")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                attributes['event.name'] as event_name,
-                attributes['event.timestamp'] as timestamp,
-                CAST(attributes['event.sequence'] AS INT) as sequence,
-                attributes['session.id'] as session_id,
-                attributes['prompt.id'] as prompt_id,
-                attributes['user.id'] as user_id,
-                attributes['tool_name'] as tool_name,
-                attributes['model'] as model,
-                attributes['duration_ms'] as duration_ms,
-                attributes['cost_usd'] as cost_usd,
-                attributes['input_tokens'] as input_tokens,
-                attributes['output_tokens'] as output_tokens,
-                attributes['cache_read_tokens'] as cache_read_tokens,
-                attributes['cache_creation_tokens'] as cache_creation_tokens,
-                attributes['error'] as error,
-                attributes['status_code'] as status_code,
-                attributes['success'] as success,
-                attributes['decision'] as decision,
-                attributes['source'] as source,
-                attributes['prompt'] as prompt,
-                attributes['prompt_length'] as prompt_length,
-                attributes['tool_result_size_bytes'] as tool_result_size_bytes,
-                attributes['speed'] as speed
+                attributes->>'event.name' as event_name,
+                attributes->>'event.timestamp' as timestamp,
+                (attributes->>'event.sequence')::int as sequence,
+                attributes->>'session.id' as session_id,
+                attributes->>'prompt.id' as prompt_id,
+                attributes->>'user.id' as user_id,
+                attributes->>'tool_name' as tool_name,
+                attributes->>'model' as model,
+                attributes->>'duration_ms' as duration_ms,
+                attributes->>'cost_usd' as cost_usd,
+                attributes->>'input_tokens' as input_tokens,
+                attributes->>'output_tokens' as output_tokens,
+                attributes->>'cache_read_tokens' as cache_read_tokens,
+                attributes->>'cache_creation_tokens' as cache_creation_tokens,
+                attributes->>'error' as error,
+                attributes->>'status_code' as status_code,
+                attributes->>'success' as success,
+                attributes->>'decision' as decision,
+                attributes->>'source' as source,
+                attributes->>'prompt' as prompt,
+                attributes->>'prompt_length' as prompt_length,
+                attributes->>'tool_result_size_bytes' as tool_result_size_bytes,
+                attributes->>'speed' as speed
             FROM {self.logs_table}
             {where}
-            ORDER BY CAST(attributes['event.sequence'] AS INT) ASC
+            ORDER BY (attributes->>'event.sequence')::int ASC
         """.strip()
 
     def build_prompt_events_query(self, session_id: str, prompt_id: str) -> str:
         return f"""
             SELECT
-                attributes['event.name'] as event_name,
-                attributes['event.timestamp'] as timestamp,
-                CAST(attributes['event.sequence'] AS INT) as sequence,
-                attributes['session.id'] as session_id,
-                attributes['prompt.id'] as prompt_id,
-                attributes['tool_name'] as tool_name,
-                attributes['model'] as model,
-                attributes['duration_ms'] as duration_ms,
-                attributes['cost_usd'] as cost_usd,
-                attributes['input_tokens'] as input_tokens,
-                attributes['output_tokens'] as output_tokens,
-                attributes['cache_read_tokens'] as cache_read_tokens,
-                attributes['cache_creation_tokens'] as cache_creation_tokens,
-                attributes['error'] as error,
-                attributes['status_code'] as status_code,
-                attributes['success'] as success,
-                attributes['decision'] as decision,
-                attributes['source'] as source,
-                attributes['prompt'] as prompt,
-                attributes['tool_result_size_bytes'] as tool_result_size_bytes,
-                attributes['tool_parameters'] as tool_parameters
+                attributes->>'event.name' as event_name,
+                attributes->>'event.timestamp' as timestamp,
+                (attributes->>'event.sequence')::int as sequence,
+                attributes->>'session.id' as session_id,
+                attributes->>'prompt.id' as prompt_id,
+                attributes->>'tool_name' as tool_name,
+                attributes->>'model' as model,
+                attributes->>'duration_ms' as duration_ms,
+                attributes->>'cost_usd' as cost_usd,
+                attributes->>'input_tokens' as input_tokens,
+                attributes->>'output_tokens' as output_tokens,
+                attributes->>'cache_read_tokens' as cache_read_tokens,
+                attributes->>'cache_creation_tokens' as cache_creation_tokens,
+                attributes->>'error' as error,
+                attributes->>'status_code' as status_code,
+                attributes->>'success' as success,
+                attributes->>'decision' as decision,
+                attributes->>'source' as source,
+                attributes->>'prompt' as prompt,
+                attributes->>'tool_result_size_bytes' as tool_result_size_bytes,
+                attributes->>'tool_parameters' as tool_parameters
             FROM {self.logs_table}
             WHERE {self.service_filter}
-              AND attributes['session.id'] = '{session_id}'
-              AND attributes['prompt.id'] = '{prompt_id}'
-            ORDER BY CAST(attributes['event.sequence'] AS INT) ASC
+              AND attributes->>'session.id' = '{session_id}'
+              AND attributes->>'prompt.id' = '{prompt_id}'
+            ORDER BY (attributes->>'event.sequence')::int ASC
         """.strip()
 
     def build_token_usage_query(
@@ -187,21 +207,21 @@ class QueryService:
     ) -> str:
         conditions = ["name = 'claude_code.token.usage'"]
         if session_id:
-            conditions.append(f"sum.attributes['session.id'] = '{session_id}'")
+            conditions.append(f"sum_attributes->>'session.id' = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                sum.attributes['session.id'] as session_id,
-                sum.attributes['model'] as model,
-                sum.attributes['type'] as token_type,
-                sum.value as value,
-                sum.start_time_unix_nano,
-                sum.time_unix_nano
+                sum_attributes->>'session.id' as session_id,
+                sum_attributes->>'model' as model,
+                sum_attributes->>'type' as token_type,
+                sum_value as value,
+                sum_start_time_unix_nano,
+                sum_time_unix_nano
             FROM {self.metrics_table}
             {where}
-            ORDER BY sum.time_unix_nano DESC
+            ORDER BY sum_time_unix_nano DESC
         """.strip()
 
     def build_cost_usage_query(
@@ -210,20 +230,20 @@ class QueryService:
     ) -> str:
         conditions = ["name = 'claude_code.cost.usage'"]
         if session_id:
-            conditions.append(f"sum.attributes['session.id'] = '{session_id}'")
+            conditions.append(f"sum_attributes->>'session.id' = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                sum.attributes['session.id'] as session_id,
-                sum.attributes['model'] as model,
-                sum.value as cost_usd,
-                sum.start_time_unix_nano,
-                sum.time_unix_nano
+                sum_attributes->>'session.id' as session_id,
+                sum_attributes->>'model' as model,
+                sum_value as cost_usd,
+                sum_start_time_unix_nano,
+                sum_time_unix_nano
             FROM {self.metrics_table}
             {where}
-            ORDER BY sum.time_unix_nano DESC
+            ORDER BY sum_time_unix_nano DESC
         """.strip()
 
     def build_tool_stats_query(
@@ -231,25 +251,25 @@ class QueryService:
         session_id: Optional[str] = None,
         mcp_only: bool = False,
     ) -> str:
-        conditions = [self.service_filter, "attributes['event.name'] = 'tool_result'"]
+        conditions = [self.service_filter, "attributes->>'event.name' = 'tool_result'"]
         if session_id:
-            conditions.append(f"attributes['session.id'] = '{session_id}'")
+            conditions.append(f"attributes->>'session.id' = '{session_id}'")
         if mcp_only:
-            conditions.append("attributes['tool_name'] LIKE 'mcp!_!_%' ESCAPE '!'")
+            conditions.append("attributes->>'tool_name' LIKE 'mcp\\_%'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                attributes['tool_name'] as tool_name,
+                attributes->>'tool_name' as tool_name,
                 COUNT(*) as call_count,
-                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms,
-                SUM(CASE WHEN attributes['success'] = 'true' THEN 1 ELSE 0 END) as success_count,
-                SUM(CASE WHEN attributes['success'] = 'false' THEN 1 ELSE 0 END) as failure_count,
-                SUM(CAST(attributes['tool_result_size_bytes'] AS BIGINT)) as total_result_bytes
+                AVG((attributes->>'duration_ms')::double precision) as avg_duration_ms,
+                SUM(CASE WHEN attributes->>'success' = 'true' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN attributes->>'success' = 'false' THEN 1 ELSE 0 END) as failure_count,
+                SUM((attributes->>'tool_result_size_bytes')::bigint) as total_result_bytes
             FROM {self.logs_table}
             {where}
-            GROUP BY attributes['tool_name']
+            GROUP BY attributes->>'tool_name'
             ORDER BY call_count DESC
         """.strip()
 
@@ -257,22 +277,22 @@ class QueryService:
         self,
         session_id: Optional[str] = None,
     ) -> str:
-        conditions = [self.service_filter, "attributes['event.name'] = 'api_error'"]
+        conditions = [self.service_filter, "attributes->>'event.name' = 'api_error'"]
         if session_id:
-            conditions.append(f"attributes['session.id'] = '{session_id}'")
+            conditions.append(f"attributes->>'session.id' = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                attributes['model'] as model,
-                attributes['status_code'] as status_code,
-                attributes['error'] as error,
+                attributes->>'model' as model,
+                attributes->>'status_code' as status_code,
+                attributes->>'error' as error,
                 COUNT(*) as error_count,
-                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms
+                AVG((attributes->>'duration_ms')::double precision) as avg_duration_ms
             FROM {self.logs_table}
             {where}
-            GROUP BY attributes['model'], attributes['status_code'], attributes['error']
+            GROUP BY attributes->>'model', attributes->>'status_code', attributes->>'error'
             ORDER BY error_count DESC
         """.strip()
 
@@ -280,47 +300,47 @@ class QueryService:
         self,
         session_id: Optional[str] = None,
     ) -> str:
-        conditions = [self.service_filter, "attributes['event.name'] = 'api_request'"]
+        conditions = [self.service_filter, "attributes->>'event.name' = 'api_request'"]
         if session_id:
-            conditions.append(f"attributes['session.id'] = '{session_id}'")
+            conditions.append(f"attributes->>'session.id' = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                attributes['model'] as model,
+                attributes->>'model' as model,
                 COUNT(*) as request_count,
-                AVG(CAST(attributes['duration_ms'] AS DOUBLE)) as avg_duration_ms,
-                PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.5) as p50_duration_ms,
-                PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.95) as p95_duration_ms,
-                SUM(CAST(attributes['input_tokens'] AS BIGINT)) as total_input_tokens,
-                SUM(CAST(attributes['output_tokens'] AS BIGINT)) as total_output_tokens,
-                SUM(CAST(attributes['cache_read_tokens'] AS BIGINT)) as total_cache_read_tokens,
-                SUM(CAST(attributes['cost_usd'] AS DOUBLE)) as total_cost_usd
+                AVG((attributes->>'duration_ms')::double precision) as avg_duration_ms,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY (attributes->>'duration_ms')::double precision) as p50_duration_ms,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY (attributes->>'duration_ms')::double precision) as p95_duration_ms,
+                SUM((attributes->>'input_tokens')::bigint) as total_input_tokens,
+                SUM((attributes->>'output_tokens')::bigint) as total_output_tokens,
+                SUM((attributes->>'cache_read_tokens')::bigint) as total_cache_read_tokens,
+                SUM((attributes->>'cost_usd')::double precision) as total_cost_usd
             FROM {self.logs_table}
             {where}
-            GROUP BY attributes['model']
+            GROUP BY attributes->>'model'
         """.strip()
 
     def build_tool_performance_query(self, days: Optional[float] = None) -> str:
         """All tools with latency percentiles and success rates."""
         return f"""
             SELECT
-                attributes['tool_name'] as tool_name,
+                attributes->>'tool_name' as tool_name,
                 COUNT(*) as call_count,
-                SUM(CASE WHEN attributes['success'] = 'true' THEN 1 ELSE 0 END) as success_count,
-                SUM(CASE WHEN attributes['success'] = 'false' THEN 1 ELSE 0 END) as failure_count,
-                ROUND(100.0 * SUM(CASE WHEN attributes['success'] = 'true' THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate,
-                ROUND(AVG(CAST(attributes['duration_ms'] AS DOUBLE)), 0) as avg_duration_ms,
-                ROUND(PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.5), 0) as p50_duration_ms,
-                ROUND(PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.95), 0) as p95_duration_ms,
-                ROUND(PERCENTILE(CAST(attributes['duration_ms'] AS DOUBLE), 0.99), 0) as p99_duration_ms,
-                SUM(CAST(attributes['tool_result_size_bytes'] AS BIGINT)) as total_result_bytes
+                SUM(CASE WHEN attributes->>'success' = 'true' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN attributes->>'success' = 'false' THEN 1 ELSE 0 END) as failure_count,
+                ROUND(100.0 * SUM(CASE WHEN attributes->>'success' = 'true' THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate,
+                ROUND(AVG((attributes->>'duration_ms')::double precision), 0) as avg_duration_ms,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY (attributes->>'duration_ms')::double precision), 0) as p50_duration_ms,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY (attributes->>'duration_ms')::double precision), 0) as p95_duration_ms,
+                ROUND(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY (attributes->>'duration_ms')::double precision), 0) as p99_duration_ms,
+                SUM((attributes->>'tool_result_size_bytes')::bigint) as total_result_bytes
             FROM {self.logs_table}
             WHERE {self.service_filter}
-              AND attributes['event.name'] = 'tool_result'
+              AND attributes->>'event.name' = 'tool_result'
               {self._days_filter(days)}
-            GROUP BY attributes['tool_name']
+            GROUP BY attributes->>'tool_name'
             ORDER BY call_count DESC
         """.strip()
 
@@ -328,18 +348,18 @@ class QueryService:
         """Recent individual calls for a specific tool."""
         return f"""
             SELECT
-                attributes['event.timestamp'] as timestamp,
-                attributes['tool_name'] as tool_name,
-                attributes['session.id'] as session_id,
-                attributes['prompt.id'] as prompt_id,
-                attributes['duration_ms'] as duration_ms,
-                attributes['success'] as success,
-                attributes['tool_result_size_bytes'] as result_size_bytes
+                attributes->>'event.timestamp' as timestamp,
+                attributes->>'tool_name' as tool_name,
+                attributes->>'session.id' as session_id,
+                attributes->>'prompt.id' as prompt_id,
+                attributes->>'duration_ms' as duration_ms,
+                attributes->>'success' as success,
+                attributes->>'tool_result_size_bytes' as result_size_bytes
             FROM {self.logs_table}
             WHERE {self.service_filter}
-              AND attributes['event.name'] = 'tool_result'
-              AND attributes['tool_name'] = '{tool_name}'
-            ORDER BY attributes['event.timestamp'] DESC
+              AND attributes->>'event.name' = 'tool_result'
+              AND attributes->>'tool_name' = '{tool_name}'
+            ORDER BY attributes->>'event.timestamp' DESC
             LIMIT {limit}
         """.strip()
 
@@ -530,12 +550,12 @@ class QueryService:
         return f"""
             WITH prompts AS (
                 SELECT
-                    attributes['session.id'] as session_id,
-                    attributes['prompt.id'] as prompt_id,
-                    attributes['event.timestamp'] as prompt_ts
+                    attributes->>'session.id' as session_id,
+                    attributes->>'prompt.id' as prompt_id,
+                    attributes->>'event.timestamp' as prompt_ts
                 FROM {self.logs_table}
                 WHERE {self.service_filter}
-                  AND attributes['event.name'] = 'user_prompt'
+                  AND attributes->>'event.name' = 'user_prompt'
             ),
             prompt_events AS (
                 SELECT
@@ -543,21 +563,21 @@ class QueryService:
                     p.prompt_id,
                     p.prompt_ts,
                     COUNT(*) as events_in_prompt,
-                    COUNT(CASE WHEN l.attributes['event.name'] = 'api_request' THEN 1 END) as api_calls,
-                    COUNT(CASE WHEN l.attributes['event.name'] = 'tool_result' THEN 1 END) as tool_calls,
-                    MAX(l.attributes['event.timestamp']) as last_agent_event
+                    COUNT(CASE WHEN l.attributes->>'event.name' = 'api_request' THEN 1 END) as api_calls,
+                    COUNT(CASE WHEN l.attributes->>'event.name' = 'tool_result' THEN 1 END) as tool_calls,
+                    MAX(l.attributes->>'event.timestamp') as last_agent_event
                 FROM prompts p
                 LEFT JOIN {self.logs_table} l
-                    ON p.session_id = l.attributes['session.id']
-                    AND p.prompt_id = l.attributes['prompt.id']
-                    AND l.attributes['event.name'] != 'user_prompt'
-                    AND l.resource.attributes['service.name'] = '{self.SERVICE_NAME}'
+                    ON p.session_id = l.attributes->>'session.id'
+                    AND p.prompt_id = l.attributes->>'prompt.id'
+                    AND l.attributes->>'event.name' != 'user_prompt'
+                    AND l.resource_attributes->>'service.name' = '{self.SERVICE_NAME}'
                 GROUP BY p.session_id, p.prompt_id, p.prompt_ts
             ),
             with_durations AS (
                 SELECT *,
-                    ROUND((UNIX_TIMESTAMP(CAST(last_agent_event AS TIMESTAMP))
-                         - UNIX_TIMESTAMP(CAST(prompt_ts AS TIMESTAMP))), 0) as agent_work_sec
+                    ROUND(EXTRACT(EPOCH FROM last_agent_event::timestamp)
+                         - EXTRACT(EPOCH FROM prompt_ts::timestamp), 0) as agent_work_sec
                 FROM prompt_events
                 WHERE last_agent_event IS NOT NULL
             )
@@ -565,8 +585,8 @@ class QueryService:
                 COUNT(DISTINCT session_id) as total_sessions,
                 COUNT(*) as total_prompts,
                 ROUND(AVG(agent_work_sec), 1) as avg_turnaround_sec,
-                ROUND(PERCENTILE(agent_work_sec, 0.5), 1) as p50_turnaround_sec,
-                ROUND(PERCENTILE(agent_work_sec, 0.95), 1) as p95_turnaround_sec,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY agent_work_sec), 1) as p50_turnaround_sec,
+                ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY agent_work_sec), 1) as p95_turnaround_sec,
                 ROUND(MAX(agent_work_sec), 0) as max_turnaround_sec,
                 ROUND(AVG(api_calls), 1) as avg_api_calls,
                 ROUND(AVG(tool_calls), 1) as avg_tool_calls,
@@ -581,18 +601,18 @@ class QueryService:
     ) -> str:
         """Per-prompt turnaround data. Optional session_id filter."""
         session_filter = (
-            f"AND attributes['session.id'] = '{session_id}'" if session_id else ""
+            f"AND attributes->>'session.id' = '{session_id}'" if session_id else ""
         )
         return f"""
             WITH prompts AS (
                 SELECT
-                    attributes['session.id'] as session_id,
-                    attributes['prompt.id'] as prompt_id,
-                    attributes['event.timestamp'] as prompt_ts,
-                    SUBSTRING(attributes['prompt'], 1, 80) as prompt_preview
+                    attributes->>'session.id' as session_id,
+                    attributes->>'prompt.id' as prompt_id,
+                    attributes->>'event.timestamp' as prompt_ts,
+                    LEFT(attributes->>'prompt', 80) as prompt_preview
                 FROM {self.logs_table}
                 WHERE {self.service_filter}
-                  AND attributes['event.name'] = 'user_prompt'
+                  AND attributes->>'event.name' = 'user_prompt'
                   {session_filter}
             ),
             prompt_events AS (
@@ -602,22 +622,22 @@ class QueryService:
                     p.prompt_ts,
                     p.prompt_preview,
                     COUNT(*) as events_in_prompt,
-                    COUNT(CASE WHEN l.attributes['event.name'] = 'api_request' THEN 1 END) as api_calls,
-                    COUNT(CASE WHEN l.attributes['event.name'] = 'tool_result' THEN 1 END) as tool_calls,
-                    MAX(l.attributes['event.timestamp']) as last_agent_event,
-                    MAX(CASE WHEN l.attributes['tool_name'] = 'AskUserQuestion' THEN 1 ELSE 0 END) as has_question,
-                    MAX(CASE WHEN l.attributes['tool_name'] = 'ExitPlanMode' THEN 1 ELSE 0 END) as has_plan_exit
+                    COUNT(CASE WHEN l.attributes->>'event.name' = 'api_request' THEN 1 END) as api_calls,
+                    COUNT(CASE WHEN l.attributes->>'event.name' = 'tool_result' THEN 1 END) as tool_calls,
+                    MAX(l.attributes->>'event.timestamp') as last_agent_event,
+                    MAX(CASE WHEN l.attributes->>'tool_name' = 'AskUserQuestion' THEN 1 ELSE 0 END) as has_question,
+                    MAX(CASE WHEN l.attributes->>'tool_name' = 'ExitPlanMode' THEN 1 ELSE 0 END) as has_plan_exit
                 FROM prompts p
                 LEFT JOIN {self.logs_table} l
-                    ON p.session_id = l.attributes['session.id']
-                    AND p.prompt_id = l.attributes['prompt.id']
-                    AND l.attributes['event.name'] != 'user_prompt'
-                    AND l.resource.attributes['service.name'] = '{self.SERVICE_NAME}'
+                    ON p.session_id = l.attributes->>'session.id'
+                    AND p.prompt_id = l.attributes->>'prompt.id'
+                    AND l.attributes->>'event.name' != 'user_prompt'
+                    AND l.resource_attributes->>'service.name' = '{self.SERVICE_NAME}'
                 GROUP BY p.session_id, p.prompt_id, p.prompt_ts, p.prompt_preview
             )
             SELECT *,
-                ROUND((UNIX_TIMESTAMP(CAST(last_agent_event AS TIMESTAMP))
-                     - UNIX_TIMESTAMP(CAST(prompt_ts AS TIMESTAMP))), 0) as agent_work_sec
+                ROUND(EXTRACT(EPOCH FROM last_agent_event::timestamp)
+                     - EXTRACT(EPOCH FROM prompt_ts::timestamp), 0) as agent_work_sec
             FROM prompt_events
             ORDER BY prompt_ts DESC
             LIMIT {limit}
@@ -626,14 +646,14 @@ class QueryService:
     def build_summary_query(self, days: Optional[float] = None) -> str:
         return f"""
             SELECT
-                COUNT(DISTINCT attributes['session.id']) as total_sessions,
-                COUNT(DISTINCT attributes['user.id']) as total_users,
+                COUNT(DISTINCT attributes->>'session.id') as total_sessions,
+                COUNT(DISTINCT attributes->>'user.id') as total_users,
                 COUNT(*) as total_events,
-                COUNT(CASE WHEN attributes['event.name'] = 'user_prompt' THEN 1 END) as total_prompts,
-                COUNT(CASE WHEN attributes['event.name'] = 'api_request' THEN 1 END) as total_api_calls,
-                COUNT(CASE WHEN attributes['event.name'] = 'api_error' THEN 1 END) as total_errors,
-                SUM(CASE WHEN attributes['event.name'] = 'api_request'
-                    THEN CAST(attributes['cost_usd'] AS DOUBLE) ELSE 0 END) as total_cost_usd
+                COUNT(CASE WHEN attributes->>'event.name' = 'user_prompt' THEN 1 END) as total_prompts,
+                COUNT(CASE WHEN attributes->>'event.name' = 'api_request' THEN 1 END) as total_api_calls,
+                COUNT(CASE WHEN attributes->>'event.name' = 'api_error' THEN 1 END) as total_errors,
+                SUM(CASE WHEN attributes->>'event.name' = 'api_request'
+                    THEN (attributes->>'cost_usd')::double precision ELSE 0 END) as total_cost_usd
             FROM {self.logs_table}
             WHERE {self.service_filter}
               {self._days_filter(days)}
