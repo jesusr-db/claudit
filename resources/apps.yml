@@ -19,12 +19,8 @@ resources:
             value: ${var.schema}
           - name: SQL_WAREHOUSE_ID
             value: ${var.warehouse_id}
-          - name: LAKEBASE_PROJECT_ID
-            value: ${var.lakebase_project}
-          - name: LAKEBASE_BRANCH
-            value: ${var.lakebase_branch}
-          - name: LAKEBASE_ENDPOINT
-            value: ${var.lakebase_endpoint}
+          - name: LAKEBASE_INSTANCE_NAME
+            value: ${var.lakebase_instance}
           - name: LAKEBASE_DATABASE
             value: ${var.lakebase_database}
       resources:
@@ -34,8 +30,9 @@ resources:
             permission: CAN_USE
         - name: lakebase
           database:
-            name: ${var.lakebase_project}
-            permission: CAN_USE
+            instance_name: ${resources.database_instances.lakebase_instance.name}
+            database_name: ${var.lakebase_database}
+            permission: CAN_CONNECT_AND_CREATE
       permissions:
         - user_name: ${workspace.current_user.userName}
           level: CAN_MANAGE

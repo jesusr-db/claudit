@@ -49,12 +49,29 @@ async def health_check():
 
 @app.on_event("startup")
 async def warm_cache():
-    """Pre-fetch the most common KPI queries to warm the cache on startup."""
+    """Refresh materialized views and pre-fetch common queries to warm the cache on startup."""
     pg = get_pg_executor()
     if pg is None:
         return
+
+    # Refresh all materialized views first
+    refresh_queries = [
+        "REFRESH MATERIALIZED VIEW zerobus_sdp.kpi_logs_mat",
+        "REFRESH MATERIALIZED VIEW zerobus_sdp.otel_logs_mat",
+        "REFRESH MATERIALIZED VIEW zerobus_sdp.otel_spans_mat",
+    ]
+    refresh_results = await asyncio.gather(
+        *[asyncio.to_thread(pg.execute, q, 60000) for q in refresh_queries],
+        return_exceptions=True,
+    )
+    ok = sum(1 for r in refresh_results if not isinstance(r, Exception))
+    logger.info("Mat view refresh: %d/%d views refreshed", ok, len(refresh_queries))
+
+    # Pre-fetch common KPI queries
     try:
-        from backend.routers.kpis import _cached_execute, kpi_service
+        from backend.cache import cached_execute
+        from backend.services.kpi_query_service import KpiQueryService
+        kpi_service = KpiQueryService()
         warmup_queries = {
             "badges:30": kpi_service.build_kpi_badges(days=30),
             "cost_overview:30": kpi_service.build_cost_overview(days=30),
@@ -62,7 +79,7 @@ async def warm_cache():
             "cost_trend:30": kpi_service.build_cost_trend(days=30),
         }
         results = await asyncio.gather(
-            *[_cached_execute(k, q) for k, q in warmup_queries.items()],
+            *[cached_execute(k, q) for k, q in warmup_queries.items()],
             return_exceptions=True,
         )
         ok = sum(1 for r in results if not isinstance(r, Exception))

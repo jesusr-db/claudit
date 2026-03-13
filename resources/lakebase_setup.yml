@@ -1,7 +1,7 @@
 resources:
   jobs:
     lakebase_setup:
-      name: "[${bundle.target} ${workspace.current_user.short_name}] claudit-lakebase-setup"
+      name: claudit-lakebase-setup
       description: "Creates synced database tables from SDP MVs to Lakebase Provisioned, grants SP access"
       tags:
         app: claudit

@@ -10,32 +10,46 @@ class Settings(BaseSettings):
     sql_warehouse_id: str = ""
     mcp_schema_name: str = "default"  # Schema for MCP server OTEL data
 
-    # Lakebase connection settings
-    lakebase_project_id: str = "claudit-otel"
-    lakebase_branch: str = "production"
-    lakebase_endpoint: str = "primary"
+    # Lakebase Provisioned connection settings
+    lakebase_instance_name: str = "claudit-db"
     lakebase_database: str = "claudit"
 
-    # PG table names (no catalog prefix — used by PgExecutor)
+    # PG table names (schema-qualified — used by PgExecutor against Lakebase Provisioned)
+    # These are views over synced tables that cast TEXT→JSONB for ->>'key' operator support
     @property
     def otel_logs_table(self) -> str:
-        return "zerobus_otel_logs"
+        return "zerobus_sdp.otel_logs"
+
+    @property
+    def kpi_logs_mat_table(self) -> str:
+        """Materialized view with pre-extracted columns for KPI queries (no JSONB cast overhead)."""
+        return "zerobus_sdp.kpi_logs_mat"
+
+    @property
+    def otel_logs_mat_table(self) -> str:
+        """Wide materialized view covering all QueryService columns (no JSONB cast overhead)."""
+        return "zerobus_sdp.otel_logs_mat"
+
+    @property
+    def otel_spans_mat_table(self) -> str:
+        """Materialized view with pre-extracted span attributes (no JSONB cast overhead)."""
+        return "zerobus_sdp.otel_spans_mat"
 
     @property
     def otel_metrics_table(self) -> str:
-        return "zerobus_otel_metrics"
+        return "zerobus_sdp.otel_metrics"
 
     @property
     def mcp_otel_spans_table(self) -> str:
-        return "mcp_otel_spans"
+        return "zerobus_sdp.otel_spans"
 
     @property
     def mcp_otel_logs_table(self) -> str:
-        return "mcp_otel_logs"
+        return "zerobus_sdp.otel_logs"  # Same source — MCP data is in same logs table
 
     @property
     def mcp_otel_metrics_table(self) -> str:
-        return "mcp_otel_metrics"
+        return "zerobus_sdp.otel_metrics"  # Same source — MCP data is in same metrics table
 
     # System table properties (catalog-qualified, used by SqlExecutor via SQL Warehouse)
     @property

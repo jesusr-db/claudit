@@ -1,250 +1,212 @@
-# Claudit Project Handoff
+# KPI Performance Optimization Handoff
 
-**Date:** 2026-03-02
-**Status:** MVP deployed and running on Databricks Apps
-**Branch:** `main` (feature branch merged)
+**Date:** 2026-03-11
+**Branch:** `lakebase`
+**Status:** KPI panel load times reduced from 30s+ timeouts (504) to sub-5ms queries. All 4 KPI tabs render data.
 
----
+## Problem
 
-## Current State
+Most KPI endpoints were returning **504 Gateway Timeout** errors on the deployed Databricks App. 12 of 17 KPI endpoints timed out, making the KPI Hub unusable.
 
-**App is LIVE:** https://claudit-observability-1351565862180944.aws.databricksapps.com
+**Root cause:** Every query cast `TEXT → JSONB` on every row of every CTE. With 4086 rows and queries containing 6-8 chained CTEs, each CTE re-parsed the JSON. The Lakebase Provisioned instance (CU_1) couldn't complete these within the 30s proxy timeout.
 
-The MVP is deployed and functional. Dashboard, sessions list, session timeline, MCP servers, and KPI hub views are all working. Backend has routers for sessions, metrics, KPIs, and MCP servers. Frontend uses React + Mantine + Recharts.
+## What Was Done
 
----
+### 1. Materialized View with Pre-Extracted Columns
 
-## PRIORITY 1: Verify databricks-mcp Tools Load
+Created `zerobus_sdp.kpi_logs_mat` — a PostgreSQL materialized view that extracts 16 JSONB attributes into typed columns once, at refresh time:
 
-The `databricks-mcp` MCP server config was updated (session 4) to use a **hardcoded OAuth token** in `~/.claude.json` — same pattern as the working `weather-server`. This should fix the connection issue that persisted across 4 sessions.
-
-### First thing to do: verify tools loaded
 ```
-ToolSearch: "databricks-mcp"
+otel_logs_pg_synced (TEXT attributes)
+  → kpi_logs_mat (session_id TEXT, event_name TEXT, event_ts TIMESTAMP,
+                  cost_usd DOUBLE, input_tokens BIGINT, model TEXT, ...)
 ```
-If tools appear → the fix worked. Proceed to use them (e.g., `mcp__databricks-mcp__execute_sql` with param `sql_query`).
 
-### If tools still don't appear
-The hardcoded token may have expired (1-hour TTL). Refresh it:
-```bash
-# Get fresh token and update ~/.claude.json
-FRESH_TOKEN=$(databricks auth token --host "https://fe-vm-vdm-classic-rikfy0.cloud.databricks.com" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-python3 -c "
-import json
-with open('$HOME/.claude.json', 'r') as f:
-    d = json.load(f)
-d['mcpServers']['databricks-mcp']['headers']['Authorization'] = 'Bearer ' + '$FRESH_TOKEN'
-with open('$HOME/.claude.json', 'w') as f:
-    json.dump(d, f, indent=2)
-print('Token refreshed')
-"
+**Query performance before/after:**
+| Query | Before | After |
+|-------|--------|-------|
+| cost_overview | 504 timeout | 1.4ms |
+| model_performance_matrix (8 CTEs) | 504 timeout | 3.9ms |
+| kpi_badges (5 CTEs) | 504 timeout | 4.3ms |
+| All other KPI queries | 504 timeout | 1-5ms |
+
+### 2. Four Indexes on the Materialized View
+
+```sql
+idx_mat_service_event_ts   (service_name, event_name, event_ts)  -- main filter pattern
+idx_mat_session_prompt     (session_id, prompt_id)               -- GROUP BY pattern
+idx_mat_event_ts           (event_ts)                            -- time range scans
+idx_mat_session_prompt_seq (session_id, prompt_id, event_seq)    -- window functions
 ```
-Then restart Claude Code.
 
-### Long-term fix needed
-The `CLAUDE_ENV_FILE` env var is never set in the session, so the `SessionStart` hook that writes `DATABRICKS_MCP_TOKEN` to it is a no-op. The `${DATABRICKS_MCP_TOKEN}` env var interpolation in headers never resolves. The hardcoded token is a workaround; the real fix requires understanding why `CLAUDE_ENV_FILE` isn't populated.
+### 3. Rewrote All KPI Queries
 
----
+**File:** `backend/services/kpi_query_service.py`
 
-## PRIORITY 2: Fix Frontend Tests
+All 16 KPI query methods now use `kpi_logs_mat` with direct column access:
+- `attributes->>'session.id'` → `session_id`
+- `(attributes->>'cost_usd')::double precision` → `cost_usd`
+- `(attributes->>'event.timestamp')::timestamp` → `event_ts`
 
-**Backend tests: 42/42 passing.**
+Added `_prompt_complexity_cte()` helper to DRY the repeated prompt-events → complexity bucketing pattern used by all 5 Phase 4 queries.
 
-**Frontend tests: FAILING** — test mocks are out of date after recent UI changes.
+The `build_e2e_flow_summary()` query still uses the JSONB spans view since `otel_spans` has 0 rows (no MCP span data yet).
 
-### What's broken
-The `vi.mock("@/shared/hooks/useApi")` blocks in test files don't include hooks added in recent commits:
+Added `build_refresh_mat_view()` method for on-demand refresh.
 
-| Test file | Missing mock(s) |
+### 4. Backend Caching & Timeout Protection
+
+**File:** `backend/routers/kpis.py`
+- Added 60-second TTL in-memory cache (`_cached_execute`) — identical queries within 60s return cached results
+- Added `POST /api/v1/kpis/refresh` endpoint to refresh the materialized view and clear cache
+- Added request-level logging: `KPI query cost_overview:7: 3ms (1 rows)`
+
+**File:** `backend/services/pg_executor.py`
+- Added `SET statement_timeout = 25000` before each query — prevents queries from running until the proxy kills them at 30s, giving a clear error instead
+
+### 5. DAB Automation
+
+**File:** `src/notebooks/lakebase_setup.py`
+- Added **Step 4b** between view creation and SP grants
+- Creates the materialized view and all 4 indexes after synced tables come online
+- Idempotent: uses `DROP MATERIALIZED VIEW IF EXISTS ... CASCADE` then recreates
+- Added `ALTER DEFAULT PRIVILEGES IN SCHEMA zerobus_sdp GRANT SELECT ON TABLES TO "{sp_role}"` to cover future objects
+
+### 6. Instance Reference Fix
+
+All code now references `claudit-db` instead of `zerobus-dev`:
+- `app.yaml` — `LAKEBASE_INSTANCE_NAME: claudit-db`
+- `backend/config.py` — default `lakebase_instance_name: "claudit-db"`
+- `src/notebooks/lakebase_setup.py` — widget default
+- `src/notebooks/lakebase_teardown.py` — widget default
+
+## Architecture
+
+```
+Delta Tables (Unity Catalog)
+  │
+  ├── SDP Pipeline (lakebase_sync) → MVs with synthetic row_id PK
+  │
+  ├── Synced Database Tables → Lakebase Provisioned (claudit-db)
+  │     └── otel_logs_pg_synced     ✅ ONLINE
+  │     └── otel_metrics_pg_synced  ✅ ONLINE
+  │     └── otel_spans_pg_synced    ✅ ONLINE
+  │
+  ├── PG Views (cast text→jsonb for ->>'key' support)
+  │     └── zerobus_sdp.otel_logs
+  │     └── zerobus_sdp.otel_metrics
+  │     └── zerobus_sdp.otel_spans
+  │
+  ├── KPI Materialized View (pre-extracted columns + indexes)  ← NEW
+  │     └── zerobus_sdp.kpi_logs_mat  (4086 rows, 4 indexes)
+  │
+  └── System Tables → SQL Warehouse → SqlExecutor → platform/flow audit
+```
+
+**Lakebase Instance:** `claudit-db` (Provisioned, CU_1, AVAILABLE)
+**PG Host:** `instance-0e8c1546-218c-4d07-a73d-c08d9fbdf375.database.cloud.databricks.com`
+**PG Database:** `claudit`
+**App URL:** `https://claudit-observability-1351565862180944.aws.databricksapps.com`
+
+## Files Changed
+
+| File | Change |
 |---|---|
-| `frontend/src/views/dashboard/__tests__/DashboardPage.test.tsx` | `useKpiBadges` |
-| `frontend/src/views/sessions/__tests__/SessionsPage.test.tsx` | `useSessionTimeline`, `useTurnaroundSummary`, `useTurnaroundDetail` |
+| `backend/services/kpi_query_service.py` | Rewrote all 16 queries to use `kpi_logs_mat`, added `_prompt_complexity_cte()` helper, added `build_refresh_mat_view()` |
+| `backend/routers/kpis.py` | Added TTL cache, logging, `POST /refresh` endpoint |
+| `backend/services/pg_executor.py` | Added `statement_timeout` parameter |
+| `backend/config.py` | Added `kpi_logs_mat_table` property, updated instance default to `claudit-db` |
+| `app.yaml` | Updated `LAKEBASE_INSTANCE_NAME` to `claudit-db` |
+| `src/notebooks/lakebase_setup.py` | Added Step 4b (mat view + indexes), `ALTER DEFAULT PRIVILEGES`, updated instance default |
+| `src/notebooks/lakebase_teardown.py` | Updated instance default |
 
-### How to fix
-Add the missing hooks to each test's `vi.mock` block. Each mock should return `{ data: <minimal valid data>, isLoading: false, error: null }`. Check the actual hook signatures in `frontend/src/shared/hooks/useApi.ts` and what the components destructure.
+## Next Steps to Improve Performance
 
-### Run tests
-```bash
-python -m pytest tests/ -v                    # Backend (should be 42/42)
-cd frontend && npx vitest run                  # Frontend (currently failing)
+### Priority 1: Automate Mat View Refresh
+
+The materialized view is a snapshot — it doesn't update automatically when new OTEL data syncs. Options:
+
+**Option A: Periodic refresh via DAB job**
+Add a scheduled job in `resources/` that runs `REFRESH MATERIALIZED VIEW CONCURRENTLY zerobus_sdp.kpi_logs_mat` every 15-30 minutes. This is the simplest approach and keeps data reasonably fresh.
+
+**Option B: Refresh on sync completion**
+Chain the mat view refresh to the lakebase_sync pipeline completion. Add a task to the `lakebase_setup.yml` job or create a new job triggered by pipeline success.
+
+**Option C: App-level background refresh**
+Add a background thread in the FastAPI app that calls `REFRESH MATERIALIZED VIEW CONCURRENTLY` every N minutes. This avoids a separate job but ties the refresh lifecycle to the app.
+
+The `POST /api/v1/kpis/refresh` endpoint already exists for manual/ad-hoc refresh.
+
+### Priority 2: Connection Pool Optimization
+
+Currently: max 5 connections, all KPI queries are synchronous (`require_pg_executor().execute()`). When the frontend fires 15+ queries in parallel across tabs, they queue.
+
+**Fix:** Make router endpoints truly async using `asyncio.to_thread()`:
+```python
+@router.get("/cost/overview")
+async def get_cost_overview(days: int = Query(30)):
+    query = kpi_service.build_cost_overview(days=days)
+    rows = await asyncio.to_thread(_cached_execute, f"cost_overview:{days}", query)
+    return rows[0] if rows else {...}
 ```
 
----
+And increase pool size to 10 (`max_size=10` in `PgExecutor._create_pool`).
 
-## Databricks MCP Server Config
+### Priority 3: Warm Cache on Startup
 
-**`~/.claude.json`** (MCP server definition — user scope):
-```json
-"databricks-mcp": {
-  "type": "http",
-  "url": "https://databricks-mcp-server-dev-1351565862180944.aws.databricksapps.com/mcp",
-  "headers": {
-    "Authorization": "Bearer <hardcoded-oauth-jwt>"
-  }
-}
-```
-**Note:** As of session 4, the token is hardcoded (not env var interpolation). It expires after 1 hour.
+The first request after deploy always hits the database cold. Add an `@app.on_event("startup")` handler that pre-fetches the most common queries (badges, cost_overview, effectiveness_overview) to warm the cache.
 
-**`~/.claude/settings.json`** (hooks):
-- `SessionStart` hook: runs `~/.claude/hooks/refresh-databricks-oauth.sh` → tries to write `DATABRICKS_MCP_TOKEN` to `CLAUDE_ENV_FILE` (currently a no-op because `CLAUDE_ENV_FILE` is empty)
-- `PreToolUse` hook (matcher: `mcp__databricks-mcp`): runs same refresh script before each databricks-mcp tool call
+### Priority 4: Replace In-Memory Cache with Proper Solution
 
-### Why env var interpolation failed (root cause)
-- `CLAUDE_ENV_FILE` is **not set** in the session environment
-- The hook script checks `if [ -n "$CLAUDE_ENV_FILE" ]` before writing — so it silently skips
-- The `${DATABRICKS_MCP_TOKEN}` in headers resolves to empty → MCP client sends `Authorization: Bearer ` → 401
-- **PAT (`$DATABRICKS_TOKEN`, 36 chars) does NOT work** — the MCP server requires OAuth JWT, returns 401 on PAT
+The current `dict`-based cache doesn't survive app restarts and has no size limits. For a single-instance app this is fine, but consider:
+- `cachetools.TTLCache` with max size
+- Redis if scaling to multiple app instances
 
-### Tool parameter gotcha
-- `execute_sql` requires `sql_query` (NOT `sql`) as the parameter name
-- Optional params: `warehouse_id`, `catalog`, `schema`, `timeout`
+### Priority 5: Reduce Frontend Parallel Query Burst
 
----
+The frontend fires all queries for a tab simultaneously. For tabs with 5 queries, this means 5 concurrent DB connections consumed instantly. Consider:
+- Staggering queries (load hero stats first, then charts, then tables)
+- Combining related queries into single endpoints (e.g., `/cost/all` returns overview + trend + models)
 
-## Critical Architecture Notes
+### Priority 6: Scale Lakebase Instance
 
-**Claude Code MCP config files:**
-- `~/.claude.json` — where Claude Code reads MCP server definitions (added via `claude mcp add -s user`)
-- `~/.claude/settings.json` — hooks, permissions, env vars, but `mcpServers` block here is **NOT read** by the MCP client
-- The `mcpServers` block in `settings.json` is effectively dead config
+If data volume grows beyond ~50K rows, the CU_1 instance may become a bottleneck again. Options:
+- Upgrade to CU_2 or CU_4 for more compute
+- Add a read replica using `read_only_dns` for query traffic
 
-**Data location:**
-- Catalog: `jmr_demo`
-- Schema: `zerobus`
-- Tables: `otel_logs` (13,985 rows), `otel_metrics`
-- Warehouse: `5067b513037fbf07` (Serverless Starter Warehouse)
-
----
-
-## Known Issues
-
-### OTEL telemetry limitations
-- **`tool_parameters` is always null** — cannot identify which specific Skill was invoked or which Task subagent type was used
-- **MCP tools are generic** — all logged as `tool_name: "mcp_tool"`, not the specific MCP tool name
-- **No skill/subagent identity** in telemetry at all
-
-### Deployment lessons learned
-1. **Workspace host** — `databricks.yml` cannot use `${DATABRICKS_HOST}` variable interpolation for `workspace.host`. Use `profile: DEFAULT` instead.
-2. **Env vars** — DAB `resources/apps.yml` `config.env` block does NOT set runtime env vars. Must use `app.yaml` `env` section.
-3. **Frontend dist** — `.gitignore` patterns are respected by `databricks bundle deploy` sync. Had to remove `dist/` and `frontend/dist/` from `.gitignore` and force-add built files.
-4. **Root package.json** — Databricks Apps build system picks up root `package.json` before `frontend/package.json`. Removed root copy.
-5. **tsc in Apps** — TypeScript 5.9.x in the Apps build environment requires `tsc -b` for projects with `references`. Simplified build to just `vite build`.
-
----
-
-## Completed Modules
-
-| # | Module | Status | What shipped |
-|---|--------|--------|-------------|
-| 2 | **MCP Tool Deep Dive** | ✅ Done | 9 backend endpoints, 3 frontend pages (McpToolsPage, McpServerDetailPage, McpServersPage with Ops/Security/Logs tabs), 9 hooks, 11 types. Exceeded original design spec. |
-| 3 | **Prompt Execution Graph** | ✅ Done | Swim-lane component (`PromptExecutionGraph.tsx`) with per-prompt drill-down via `/sessions/:id/prompts/:promptId` endpoint. Integrated into SessionDetailPage. |
-| 5 | **System Tables** (partial) | ✅ Done | Platform page (`/platform`) with 3 tabs: Billing (DBU by product), Query History (by client), AI Gateway (model performance). Uses Databricks system tables. |
-| — | **KPI Hub** | ✅ Done | 13 endpoints across 3 phases: Cost Intelligence (overview, trend, sessions, models, waste), Agent Effectiveness (retries, orphans, recovery, complexity), Flow Correlation (MCP→UC→API flow, audit). |
-| — | **Turnaround Analysis** | ✅ Done | Turnaround summary/detail endpoints + TurnaroundPage. Per-prompt agent work time, API/tool call counts. |
-
-## Backlog Roadmap
-
-| # | Module | Dependency | Notes |
-|---|--------|-----------|-------|
-| 1 | Materialized Tables | Scale > 10K events | ETL job for daily rollups |
-| 4 | Inference Tables | Table enablement | LLM request/response payloads |
-| 5b | System Tables (remaining) | Access grants | Serving metrics, deeper billing drill-downs |
-| 6 | User Correlation | Mapping table | user.id hash → email |
-| 7 | Alerts | Modules 1-6 | Threshold rules |
-| 8 | Optimization Chatbot | Model Efficiency tab | Contextual recommendations for model right-sizing — see details below |
-
-**Module 1 (Materialized Tables) is the next scalability unlock.** Modules 4 and 5b depend on table/access enablement.
-
-### Module 8: Optimization Chatbot (Model Right-Sizing Advisor)
-
-The Model Efficiency tab shows *what* to optimize but not *how*. A chatbot/advisor feature would provide contextual, actionable guidance. Scope:
-
-**Preferred optimization methods to recommend:**
-- **Claude Code `--model` flag** — route simple tasks to Haiku/Sonnet via CLI args
-- **CLAUDE.md model directives** — per-project model preferences (e.g., "use Sonnet for this repo")
-- **`/model` mid-session switching** — switch to cheaper model for simple follow-ups within a session
-- **MCP server model config** — configure which model handles tool-heavy vs reasoning-heavy calls
-- **API gateway routing rules** — complexity-based automatic routing at the proxy level
-- **Prompt optimization** — reduce input tokens via better context management, system prompt tuning
-
-**UX options (pick one):**
-1. **Inline recommendations panel** in the Model Efficiency tab — static advice based on current data patterns
-2. **Chat sidebar** — conversational advisor that can answer "how do I downsize this workflow?" with context from the drill-down data
-3. **Action cards** — each rightsizing opportunity gets a "How to fix" expandable section with specific commands/config changes
-
-**Dependencies:** Model Efficiency tab (done), drill-down details (done). No backend infra needed for option 1 or 3.
-
----
-
-## Project Structure
-
-```
-claudit/
-├── databricks.yml              # DAB bundle (profile: DEFAULT, warehouse: 5067b513037fbf07)
-├── app.yaml                    # Runtime config with env vars (CATALOG, SCHEMA_NAME, SQL_WAREHOUSE_ID)
-├── requirements.txt            # Python deps for Databricks Apps
-├── pyproject.toml              # Python project config
-├── backend/
-│   ├── main.py                 # FastAPI app + static file serving
-│   ├── config.py               # Settings (pydantic-settings, reads env vars)
-│   ├── models/                 # events.py, sessions.py, metrics.py
-│   ├── services/               # query_service.py, kpi_query_service.py, mcp_query_service.py, sql_executor.py
-│   └── routers/                # metrics.py, sessions.py, kpis.py, mcp_servers.py
-├── frontend/
-│   ├── dist/                   # Built production bundle (committed, served by FastAPI)
-│   └── src/
-│       ├── app/                # App.tsx, Layout.tsx, router/viewRegistry.ts
-│       ├── views/              # dashboard/, sessions/, kpis/, mcp-servers/
-│       ├── shared/hooks/       # useApi.ts (TanStack Query hooks)
-│       └── types/              # api.ts (TypeScript interfaces)
-├── resources/apps.yml          # DAB app resource definition
-└── tests/backend/              # pytest tests
-```
-
-## Key Commands
+## Deploy & Verify
 
 ```bash
-# Run tests
-python -m pytest tests/ -v                              # Backend tests (42/42 passing)
-cd frontend && npx vitest run                            # Frontend tests (FAILING — mock updates needed)
+# Deploy all resources
+databricks bundle deploy -t dev
 
-# Build and deploy
-cd frontend && npx vite build && cd ..                   # Rebuild frontend
-databricks bundle validate -t dev                        # Validate bundle
-databricks bundle deploy -t dev                          # Upload to workspace
+# Deploy app code
 databricks apps deploy claudit-observability \
-  --source-code-path /Workspace/Users/jesus.rodriguez@databricks.com/.bundle/claudit-observability/dev/files \
-  --profile DEFAULT                                      # Deploy app
+  --source-code-path "/Workspace/Users/jesus.rodriguez@databricks.com/.bundle/claudit-observability/dev/files"
 
-# Check app
-databricks apps logs claudit-observability --tail-lines 50 --profile DEFAULT
+# Verify health
+curl -s https://claudit-observability-1351565862180944.aws.databricksapps.com/health
+# Expected: {"status":"healthy","lakebase":"connected"}
+
+# Refresh mat view (after new data syncs)
+curl -X POST https://claudit-observability-1351565862180944.aws.databricksapps.com/api/v1/kpis/refresh
 ```
 
----
+## Connection Details
 
-## Session Log
+```bash
+# Generate PG credential
+TOKEN=$(databricks database generate-database-credential \
+  --json '{"request_id": "'$(uuidgen)'", "instance_names": ["claudit-db"]}' \
+  --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 
-### 2026-03-02 (session 4) — MCP Auth Root Cause Found
-**Problem:** databricks-mcp tools still not appearing (4th session in a row).
-**Root cause confirmed:** `CLAUDE_ENV_FILE` is not set in the session environment. The SessionStart hook checks for it before writing the token, so it silently does nothing. The `${DATABRICKS_MCP_TOKEN}` env var in the MCP config header resolves to empty → 401.
-**Investigation:**
-- Compared with working `weather-server` MCP — it uses a **hardcoded token** in `~/.claude.json`, no env var interpolation
-- Tested PAT (`$DATABRICKS_TOKEN`, 36 chars) against databricks-mcp → **401** (server requires OAuth JWT, not PAT)
-- Backend tests: 42/42 passing
-- Frontend tests: failing due to stale mocks (missing `useKpiBadges`, `useTurnaroundSummary`, `useTurnaroundDetail`)
-**Fix applied:** Updated `~/.claude.json` to hardcode a fresh OAuth JWT in the `databricks-mcp` headers (same pattern as working weather-server). Requires Claude Code restart to take effect.
+# Connect to claudit database
+EMAIL=$(databricks current-user me --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
+PGPASSWORD="$TOKEN" psql "host=instance-0e8c1546-218c-4d07-a73d-c08d9fbdf375.database.cloud.databricks.com port=5432 dbname=claudit user=$EMAIL sslmode=require"
 
-### 2026-03-02 (session 3) — MCP Connection Debugging
-**Problem:** databricks-mcp tools still not appearing despite config being correct and token being valid.
-**Investigation:** Token present (865 chars), not expired, server responds HTTP 200 with 48 tools. Successfully queried `jmr_demo.zerobus.otel_logs` (13,985 rows) and `list_warehouses` via direct curl.
-**Finding:** `CLAUDE_ENV_FILE` not set in bash tool context — suggests possible race condition where MCP client connects before hook writes the token.
-**Action:** Re-added server via `claude mcp add -s user` to ensure clean config. Next session should connect.
+# Check mat view freshness
+SELECT COUNT(*), MAX(event_ts) as latest FROM zerobus_sdp.kpi_logs_mat;
 
-### 2026-03-02 (session 2) — Databricks MCP Config Fix
-**Problem:** `databricks-mcp` tools never appeared in Claude Code despite server being healthy.
-**Root cause:** MCP server was defined in `~/.claude/settings.json` `mcpServers` block, but Claude Code reads MCP configs from `~/.claude.json`.
-**Fix:** Added server to `~/.claude.json` with `${DATABRICKS_MCP_TOKEN}` env var interpolation.
-
-### 2026-03-02 (session 1) — Databricks MCP Auth Fix
-**Problem:** OAuth token (1-hour TTL) expired mid-session causing 401 errors.
-**Fix:** Added `PreToolUse` hook in `~/.claude/settings.json` with matcher `mcp__databricks-mcp` to refresh token before each call.
+# Manual refresh
+REFRESH MATERIALIZED VIEW zerobus_sdp.kpi_logs_mat;
+```

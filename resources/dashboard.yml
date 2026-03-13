@@ -1,0 +1,9 @@
+resources:
+  dashboards:
+    claude_code_monitoring:
+      display_name: "Claude Code Monitoring"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ../src/dashboards/claude_code_monitoring.lvdash.json
+      permissions:
+        - user_name: ${workspace.current_user.userName}
+          level: CAN_MANAGE

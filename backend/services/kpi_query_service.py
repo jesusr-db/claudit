@@ -2,7 +2,11 @@ from backend.config import settings
 
 
 class KpiQueryService:
-    """Builds SQL queries for KPI Hub: cost intelligence, agent effectiveness, flow correlation."""
+    """Builds SQL queries for KPI Hub: cost intelligence, agent effectiveness, flow correlation.
+
+    Uses kpi_logs_mat materialized view with pre-extracted columns for fast queries.
+    Falls back to JSONB views only for spans (flow) queries.
+    """
 
     def __init__(self):
         pass
@@ -20,6 +24,7 @@ class KpiQueryService:
         'build_rightsizing_details', 'build_model_recommendation',
         'build_savings_calculator',
         'build_kpi_badges',
+        'build_refresh_mat_view',
     }
 
     SQL_METHODS = {
@@ -27,40 +32,27 @@ class KpiQueryService:
     }
 
     @property
-    def logs_table(self) -> str:
-        return settings.otel_logs_table
-
-    @property
-    def metrics_table(self) -> str:
-        return settings.otel_metrics_table
+    def mat(self) -> str:
+        """Materialized view with pre-extracted columns (no JSONB overhead)."""
+        return settings.kpi_logs_mat_table
 
     @property
     def spans_table(self) -> str:
         return settings.mcp_otel_spans_table
 
     @property
-    def mcp_metrics_table(self) -> str:
-        return settings.mcp_otel_metrics_table
-
-    @property
     def service_filter(self) -> str:
-        return f"resource_attributes->>'service.name' = '{self.SERVICE_NAME}'"
+        return f"service_name = '{self.SERVICE_NAME}'"
+
+    # ── Materialized view refresh ──
+
+    def build_refresh_mat_view(self) -> str:
+        return f"REFRESH MATERIALIZED VIEW {self.mat}"
 
     # ── Phase 1: Cost Intelligence ──
 
     def build_cost_overview(self, days: int = 30) -> str:
         return f"""
-            WITH api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    (attributes->>'cost_usd')::double precision as cost_usd,
-                    (attributes->>'input_tokens')::bigint as input_tokens,
-                    (attributes->>'cache_read_tokens')::bigint as cache_read_tokens
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-            )
             SELECT
                 ROUND(SUM(cost_usd)::numeric, 4) as total_cost,
                 ROUND((SUM(cost_usd) / NULLIF(COUNT(DISTINCT session_id), 0))::numeric, 4) as avg_cost_per_session,
@@ -70,65 +62,65 @@ class KpiQueryService:
                     NULLIF(SUM(input_tokens) + SUM(cache_read_tokens), 0))::numeric,
                     1
                 ) as cache_hit_pct
-            FROM api_calls
+            FROM {self.mat}
+            WHERE {self.service_filter}
+              AND event_name = 'api_request'
+              AND event_ts >= current_date - interval '{days} days'
         """.strip()
 
     def build_cost_trend(self, days: float = 30) -> str:
         if days < 1:
-            # Sub-day (1h): bucket by 5-minute intervals
             minutes = max(int(days * 24 * 60), 5)
             return f"""
                 SELECT
                     to_char(
-                        date_trunc('hour', (attributes->>'event.timestamp')::timestamp)
-                        + (floor(extract(minute from (attributes->>'event.timestamp')::timestamp) / 5) * interval '5 minutes'),
+                        date_trunc('hour', event_ts)
+                        + (floor(extract(minute from event_ts) / 5) * interval '5 minutes'),
                         'YYYY-MM-DD HH24:MI'
                     ) as date,
-                    ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as daily_cost,
-                    SUM((attributes->>'input_tokens')::bigint) as input_tokens,
-                    SUM((attributes->>'output_tokens')::bigint) as output_tokens,
-                    SUM((attributes->>'cache_read_tokens')::bigint) as cache_read_tokens,
+                    ROUND(SUM(cost_usd)::numeric, 4) as daily_cost,
+                    SUM(input_tokens) as input_tokens,
+                    SUM(output_tokens) as output_tokens,
+                    SUM(cache_read_tokens) as cache_read_tokens,
                     COUNT(*) as request_count
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND (attributes->>'event.timestamp')::timestamp >= CURRENT_TIMESTAMP - interval '{minutes} minutes'
+                  AND event_name = 'api_request'
+                  AND event_ts >= CURRENT_TIMESTAMP - interval '{minutes} minutes'
                 GROUP BY 1
                 ORDER BY date ASC
             """.strip()
         elif days <= 1:
-            # 1 day: bucket by hour
             return f"""
                 SELECT
-                    to_char((attributes->>'event.timestamp')::timestamp, 'YYYY-MM-DD HH24:00') as date,
-                    ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as daily_cost,
-                    SUM((attributes->>'input_tokens')::bigint) as input_tokens,
-                    SUM((attributes->>'output_tokens')::bigint) as output_tokens,
-                    SUM((attributes->>'cache_read_tokens')::bigint) as cache_read_tokens,
+                    to_char(event_ts, 'YYYY-MM-DD HH24:00') as date,
+                    ROUND(SUM(cost_usd)::numeric, 4) as daily_cost,
+                    SUM(input_tokens) as input_tokens,
+                    SUM(output_tokens) as output_tokens,
+                    SUM(cache_read_tokens) as cache_read_tokens,
                     COUNT(*) as request_count
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND (attributes->>'event.timestamp')::timestamp >= CURRENT_TIMESTAMP - interval '24 hours'
-                GROUP BY to_char((attributes->>'event.timestamp')::timestamp, 'YYYY-MM-DD HH24:00')
+                  AND event_name = 'api_request'
+                  AND event_ts >= CURRENT_TIMESTAMP - interval '24 hours'
+                GROUP BY to_char(event_ts, 'YYYY-MM-DD HH24:00')
                 ORDER BY date ASC
             """.strip()
         else:
-            # Multi-day (7d+): bucket by day
             int_days = int(days)
             return f"""
                 SELECT
-                    DATE((attributes->>'event.timestamp')::timestamp) as date,
-                    ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as daily_cost,
-                    SUM((attributes->>'input_tokens')::bigint) as input_tokens,
-                    SUM((attributes->>'output_tokens')::bigint) as output_tokens,
-                    SUM((attributes->>'cache_read_tokens')::bigint) as cache_read_tokens,
+                    DATE(event_ts) as date,
+                    ROUND(SUM(cost_usd)::numeric, 4) as daily_cost,
+                    SUM(input_tokens) as input_tokens,
+                    SUM(output_tokens) as output_tokens,
+                    SUM(cache_read_tokens) as cache_read_tokens,
                     COUNT(*) as request_count
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{int_days} days'
-                GROUP BY DATE((attributes->>'event.timestamp')::timestamp)
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{int_days} days'
+                GROUP BY DATE(event_ts)
                 ORDER BY date ASC
             """.strip()
 
@@ -136,32 +128,29 @@ class KpiQueryService:
         return f"""
             WITH session_costs AS (
                 SELECT
-                    attributes->>'session.id' as session_id,
-                    SUM((attributes->>'cost_usd')::double precision) as total_cost,
+                    session_id,
+                    SUM(cost_usd) as total_cost,
                     COUNT(*) as prompt_count,
                     ROUND(
-                        (100.0 * SUM((attributes->>'cache_read_tokens')::bigint) /
-                        NULLIF(SUM((attributes->>'input_tokens')::bigint)
-                             + SUM((attributes->>'cache_read_tokens')::bigint), 0))::numeric,
+                        (100.0 * SUM(cache_read_tokens) /
+                        NULLIF(SUM(input_tokens) + SUM(cache_read_tokens), 0))::numeric,
                         1
                     ) as cache_hit_pct,
-                    SUM((attributes->>'input_tokens')::bigint)
-                      + SUM((attributes->>'output_tokens')::bigint)
-                      + SUM((attributes->>'cache_read_tokens')::bigint) as total_tokens
-                FROM {self.logs_table}
+                    SUM(input_tokens) + SUM(output_tokens) + SUM(cache_read_tokens) as total_tokens
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY session_id
             ),
             first_prompts AS (
                 SELECT
-                    attributes->>'session.id' as session_id,
-                    MIN(attributes->>'prompt') as first_prompt
-                FROM {self.logs_table}
+                    session_id,
+                    MIN(prompt_text) as first_prompt
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'user_prompt'
-                GROUP BY attributes->>'session.id'
+                  AND event_name = 'user_prompt'
+                GROUP BY session_id
             )
             SELECT
                 sc.session_id,
@@ -180,43 +169,42 @@ class KpiQueryService:
     def build_model_cost_comparison(self, days: int = 30) -> str:
         return f"""
             SELECT
-                attributes->>'model' as model,
-                ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as total_cost,
+                model,
+                ROUND(SUM(cost_usd)::numeric, 4) as total_cost,
                 COUNT(*) as request_count,
-                ROUND((SUM((attributes->>'cost_usd')::double precision) / COUNT(*))::numeric, 6) as avg_cost_per_call,
-                ROUND(AVG((attributes->>'duration_ms')::double precision)::numeric, 0) as avg_latency_ms,
+                ROUND((SUM(cost_usd) / COUNT(*))::numeric, 6) as avg_cost_per_call,
+                ROUND(AVG(duration_ms)::numeric, 0) as avg_latency_ms,
                 ROUND(
-                    (100.0 * SUM((attributes->>'cache_read_tokens')::bigint) /
-                    NULLIF(SUM((attributes->>'input_tokens')::bigint)
-                         + SUM((attributes->>'cache_read_tokens')::bigint), 0))::numeric,
+                    (100.0 * SUM(cache_read_tokens) /
+                    NULLIF(SUM(input_tokens) + SUM(cache_read_tokens), 0))::numeric,
                     1
                 ) as cache_hit_pct,
-                SUM((attributes->>'input_tokens')::bigint) as total_input_tokens,
-                SUM((attributes->>'output_tokens')::bigint) as total_output_tokens
-            FROM {self.logs_table}
+                SUM(input_tokens) as total_input_tokens,
+                SUM(output_tokens) as total_output_tokens
+            FROM {self.mat}
             WHERE {self.service_filter}
-              AND attributes->>'event.name' = 'api_request'
-              AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-            GROUP BY attributes->>'model'
+              AND event_name = 'api_request'
+              AND event_ts >= current_date - interval '{days} days'
+            GROUP BY model
             ORDER BY total_cost DESC
         """.strip()
 
     def build_token_waste_signals(self, days: int = 30) -> str:
         return f"""
             SELECT
-                attributes->>'session.id' as session_id,
-                attributes->>'prompt.id' as prompt_id,
-                (attributes->>'input_tokens')::bigint as input_tokens,
-                (attributes->>'output_tokens')::bigint as output_tokens,
-                (attributes->>'cost_usd')::double precision as cost_usd,
-                attributes->>'model' as model
-            FROM {self.logs_table}
+                session_id,
+                prompt_id,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                model
+            FROM {self.mat}
             WHERE {self.service_filter}
-              AND attributes->>'event.name' = 'api_request'
-              AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-              AND (attributes->>'input_tokens')::bigint > 50000
-              AND (attributes->>'output_tokens')::bigint < 500
-            ORDER BY (attributes->>'cost_usd')::double precision DESC
+              AND event_name = 'api_request'
+              AND event_ts >= current_date - interval '{days} days'
+              AND input_tokens > 50000
+              AND output_tokens < 500
+            ORDER BY cost_usd DESC
             LIMIT 50
         """.strip()
 
@@ -225,28 +213,27 @@ class KpiQueryService:
     def build_effectiveness_overview(self, days: int = 30) -> str:
         return f"""
             WITH tool_results AS (
-                SELECT
-                    attributes->>'success' as success
-                FROM {self.logs_table}
+                SELECT success
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_result'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'tool_result'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             api_errors AS (
                 SELECT COUNT(*) as error_count
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_error'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_error'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             prompt_stats AS (
                 SELECT
-                    COUNT(DISTINCT attributes->>'prompt.id') as total_prompts,
-                    COUNT(CASE WHEN attributes->>'event.name' = 'tool_result' THEN 1 END) as total_tool_calls,
-                    COUNT(CASE WHEN attributes->>'event.name' = 'api_request' THEN 1 END) as total_api_calls
-                FROM {self.logs_table}
+                    COUNT(DISTINCT prompt_id) as total_prompts,
+                    COUNT(CASE WHEN event_name = 'tool_result' THEN 1 END) as total_tool_calls,
+                    COUNT(CASE WHEN event_name = 'api_request' THEN 1 END) as total_api_calls
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_ts >= current_date - interval '{days} days'
             )
             SELECT
                 ROUND((100.0 * SUM(CASE WHEN tr.success = 'true' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0))::numeric, 1) as tool_success_rate,
@@ -265,23 +252,23 @@ class KpiQueryService:
         return f"""
             WITH ordered_events AS (
                 SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'tool_name' as tool_name,
-                    attributes->>'event.name' as event_name,
-                    (attributes->>'event.sequence')::int as seq,
-                    LAG(attributes->>'tool_name') OVER (
-                        PARTITION BY attributes->>'session.id', attributes->>'prompt.id'
-                        ORDER BY (attributes->>'event.sequence')::int
+                    session_id,
+                    prompt_id,
+                    tool_name,
+                    event_name,
+                    event_seq,
+                    LAG(tool_name) OVER (
+                        PARTITION BY session_id, prompt_id
+                        ORDER BY event_seq
                     ) as prev_tool,
-                    LAG(attributes->>'event.name') OVER (
-                        PARTITION BY attributes->>'session.id', attributes->>'prompt.id'
-                        ORDER BY (attributes->>'event.sequence')::int
+                    LAG(event_name) OVER (
+                        PARTITION BY session_id, prompt_id
+                        ORDER BY event_seq
                     ) as prev_event
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' IN ('tool_decision', 'tool_result')
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name IN ('tool_decision', 'tool_result')
+                  AND event_ts >= current_date - interval '{days} days'
             )
             SELECT
                 tool_name,
@@ -298,24 +285,18 @@ class KpiQueryService:
     def build_orphan_decisions(self, days: int = 30) -> str:
         return f"""
             WITH decisions AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'tool_name' as tool_name
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, tool_name
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_decision'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'tool_decision'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             results AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'tool_name' as tool_name
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, tool_name
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_result'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'tool_result'
+                  AND event_ts >= current_date - interval '{days} days'
             )
             SELECT
                 d.tool_name,
@@ -335,19 +316,19 @@ class KpiQueryService:
         return f"""
             WITH sequenced AS (
                 SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'event.name' as event_name,
-                    attributes->>'model' as model,
-                    (attributes->>'event.sequence')::int as seq,
-                    LEAD(attributes->>'event.name') OVER (
-                        PARTITION BY attributes->>'session.id', attributes->>'prompt.id'
-                        ORDER BY (attributes->>'event.sequence')::int
+                    session_id,
+                    prompt_id,
+                    event_name,
+                    model,
+                    event_seq,
+                    LEAD(event_name) OVER (
+                        PARTITION BY session_id, prompt_id
+                        ORDER BY event_seq
                     ) as next_event
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' IN ('api_error', 'api_request')
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name IN ('api_error', 'api_request')
+                  AND event_ts >= current_date - interval '{days} days'
             )
             SELECT
                 model,
@@ -368,17 +349,17 @@ class KpiQueryService:
         return f"""
             WITH prompt_stats AS (
                 SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
+                    session_id,
+                    prompt_id,
                     COUNT(*) as event_count,
-                    COUNT(CASE WHEN attributes->>'event.name' = 'tool_result' THEN 1 END) as tool_calls,
-                    COUNT(CASE WHEN attributes->>'event.name' = 'api_request' THEN 1 END) as api_calls,
-                    MIN(attributes->>'event.timestamp') as first_event,
-                    MAX(attributes->>'event.timestamp') as last_event
-                FROM {self.logs_table}
+                    COUNT(CASE WHEN event_name = 'tool_result' THEN 1 END) as tool_calls,
+                    COUNT(CASE WHEN event_name = 'api_request' THEN 1 END) as api_calls,
+                    MIN(event_ts) as first_event,
+                    MAX(event_ts) as last_event
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY session_id, prompt_id
             )
             SELECT
                 CASE
@@ -389,8 +370,7 @@ class KpiQueryService:
                 END as bucket,
                 COUNT(*) as prompt_count,
                 ROUND(AVG(
-                    EXTRACT(EPOCH FROM last_event::timestamp)
-                    - EXTRACT(EPOCH FROM first_event::timestamp)
+                    EXTRACT(EPOCH FROM last_event) - EXTRACT(EPOCH FROM first_event)
                 )::numeric, 1) as avg_agent_work_sec,
                 ROUND(AVG(tool_calls)::numeric, 1) as avg_tool_calls,
                 ROUND(AVG(api_calls)::numeric, 1) as avg_api_calls
@@ -402,23 +382,13 @@ class KpiQueryService:
                     WHEN event_count BETWEEN 16 AND 50 THEN '16-50'
                     ELSE '50+'
                 END
-            ORDER BY
-                CASE bucket
-                    WHEN '1-5' THEN 1
-                    WHEN '6-15' THEN 2
-                    WHEN '16-50' THEN 3
-                    ELSE 4
-                END
+            ORDER BY MIN(event_count)
         """.strip()
 
     # ── Phase 3: Flow Correlation ──
 
     def build_e2e_flow_summary(self, days: int = 30) -> str:
-        """PG-only query: spans CTEs (tool_spans, http_connections, other_http).
-
-        UC audit data is available separately via build_uc_connection_audit (SQL Warehouse).
-        The 'extra' column for connection rows will be NULL — routers can join in Python if needed.
-        """
+        """Spans query — still uses JSONB view (spans table has 0 rows currently)."""
         return f"""
             WITH tool_spans AS (
                 SELECT
@@ -459,42 +429,27 @@ class KpiQueryService:
                 GROUP BY resource_attributes->>'service.name',
                          (regexp_match(attributes->>'http.url', '^(https?://[^/]+)'))[1]
             )
-            -- Tools
             SELECT
-                'tool' as section,
-                ts.server_name,
-                ts.tool_name as name,
-                ts.tool_calls::text as calls,
-                ts.avg_duration_ms::text as avg_duration_ms,
-                ts.success_count::text as success,
-                ts.error_count::text as errors,
+                'tool' as section, ts.server_name, ts.tool_name as name,
+                ts.tool_calls::text as calls, ts.avg_duration_ms::text as avg_duration_ms,
+                ts.success_count::text as success, ts.error_count::text as errors,
                 NULL::text as extra
             FROM tool_spans ts
             UNION ALL
-            -- UC Connections
             SELECT
-                'connection' as section,
-                hc.server_name,
-                hc.connection_name as name,
-                hc.http_calls::text as calls,
-                hc.avg_http_duration_ms::text as avg_duration_ms,
-                NULL::text as success,
-                hc.http_errors::text as errors,
+                'connection' as section, hc.server_name, hc.connection_name as name,
+                hc.http_calls::text as calls, hc.avg_http_duration_ms::text as avg_duration_ms,
+                NULL::text as success, hc.http_errors::text as errors,
                 NULL::text as extra
             FROM http_connections hc
             UNION ALL
-            -- External APIs
             SELECT
-                'external_api' as section,
-                oh.server_name,
-                oh.domain as name,
-                oh.http_calls::text as calls,
-                oh.avg_http_duration_ms::text as avg_duration_ms,
-                NULL::text as success,
-                NULL::text as errors,
+                'external_api' as section, oh.server_name, oh.domain as name,
+                oh.http_calls::text as calls, oh.avg_http_duration_ms::text as avg_duration_ms,
+                NULL::text as success, NULL::text as errors,
                 NULL::text as extra
             FROM other_http oh
-            ORDER BY server_name, section, calls::int DESC
+            ORDER BY server_name, section, calls DESC
         """.strip()
 
     def build_uc_connection_audit(self, days: int = 7) -> str:
@@ -518,7 +473,6 @@ class KpiQueryService:
     # ── Phase 4: Model Efficiency ──
 
     def _complexity_case(self) -> str:
-        """Shared CASE expression for prompt complexity bucketing."""
         return """
             CASE
                 WHEN event_count BETWEEN 1 AND 5 THEN 'simple'
@@ -538,77 +492,60 @@ class KpiQueryService:
             END
         """
 
-    def build_model_performance_matrix(self, days: int = 30) -> str:
+    def _prompt_complexity_cte(self, days: int) -> str:
+        """Shared CTE used by all Phase 4 queries — computed once per query."""
         return f"""
-            WITH prompt_events AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    COUNT(*) as event_count
-                FROM {self.logs_table}
+            prompt_events AS (
+                SELECT session_id, prompt_id, COUNT(*) as event_count
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY session_id, prompt_id
             ),
             prompt_complexity AS (
                 SELECT session_id, prompt_id,
                     {self._complexity_case()} as complexity
                 FROM prompt_events
-            ),
+            )"""
+
+    def build_model_performance_matrix(self, days: int = 30) -> str:
+        return f"""
+            WITH {self._prompt_complexity_cte(days)},
             api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'model' as model,
-                    (attributes->>'cost_usd')::double precision as cost_usd,
-                    (attributes->>'duration_ms')::double precision as duration_ms,
-                    (attributes->>'output_tokens')::bigint as output_tokens
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, model, cost_usd, duration_ms, output_tokens
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             tool_results AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'success' as success
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, success
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_result'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'tool_result'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             api_errors AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_error'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_error'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             joined AS (
-                SELECT
-                    ac.model,
-                    pc.complexity,
-                    ac.cost_usd,
-                    ac.duration_ms,
-                    ac.output_tokens
+                SELECT ac.model, pc.complexity, ac.cost_usd, ac.duration_ms, ac.output_tokens
                 FROM api_calls ac
-                JOIN prompt_complexity pc
-                  ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
             ),
             tool_joined AS (
                 SELECT pc.complexity, tr.success
                 FROM tool_results tr
-                JOIN prompt_complexity pc
-                  ON tr.session_id = pc.session_id AND tr.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON tr.session_id = pc.session_id AND tr.prompt_id = pc.prompt_id
             ),
             error_joined AS (
                 SELECT pc.complexity, ae.session_id
                 FROM api_errors ae
-                JOIN prompt_complexity pc
-                  ON ae.session_id = pc.session_id AND ae.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ae.session_id = pc.session_id AND ae.prompt_id = pc.prompt_id
             ),
             tool_rates AS (
                 SELECT complexity,
@@ -622,8 +559,7 @@ class KpiQueryService:
                 GROUP BY complexity
             )
             SELECT
-                j.model,
-                j.complexity,
+                j.model, j.complexity,
                 COUNT(*) as call_count,
                 ROUND(AVG(j.cost_usd)::numeric, 6) as avg_cost_per_call,
                 ROUND(SUM(j.cost_usd)::numeric, 4) as total_cost,
@@ -642,37 +578,17 @@ class KpiQueryService:
 
     def build_rightsizing_opportunities(self, days: int = 30) -> str:
         return f"""
-            WITH prompt_events AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    COUNT(*) as event_count
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
-            ),
-            prompt_complexity AS (
-                SELECT session_id, prompt_id,
-                    {self._complexity_case()} as complexity
-                FROM prompt_events
-            ),
+            WITH {self._prompt_complexity_cte(days)},
             api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'model' as model,
-                    (attributes->>'cost_usd')::double precision as cost_usd
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, model, cost_usd
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             joined AS (
                 SELECT
-                    ac.model,
-                    pc.complexity,
-                    ac.cost_usd,
+                    ac.model, pc.complexity, ac.cost_usd,
                     CASE
                         WHEN LOWER(ac.model) LIKE '%opus%' THEN 3
                         WHEN LOWER(ac.model) LIKE '%sonnet%' THEN 2
@@ -680,18 +596,14 @@ class KpiQueryService:
                         ELSE 2
                     END as model_tier,
                     CASE pc.complexity
-                        WHEN 'simple' THEN 1
-                        WHEN 'moderate' THEN 2
-                        WHEN 'complex' THEN 3
-                        ELSE 4
+                        WHEN 'simple' THEN 1 WHEN 'moderate' THEN 2
+                        WHEN 'complex' THEN 3 ELSE 4
                     END as complexity_tier
                 FROM api_calls ac
-                JOIN prompt_complexity pc
-                  ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
             )
             SELECT
-                model,
-                complexity,
+                model, complexity,
                 COUNT(*) as call_count,
                 ROUND(SUM(cost_usd)::numeric, 4) as total_cost,
                 ROUND(AVG(cost_usd)::numeric, 6) as avg_cost,
@@ -717,51 +629,25 @@ class KpiQueryService:
         model_filter = f"AND ac.model = '{model}'" if model else ""
         complexity_filter = f"AND pc.complexity = '{complexity}'" if complexity else ""
         return f"""
-            WITH prompt_events AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    COUNT(*) as event_count
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
-            ),
-            prompt_complexity AS (
-                SELECT session_id, prompt_id,
-                    {self._complexity_case()} as complexity
-                FROM prompt_events
-            ),
+            WITH {self._prompt_complexity_cte(days)},
             api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'model' as model,
-                    (attributes->>'cost_usd')::double precision as cost_usd,
-                    (attributes->>'duration_ms')::double precision as duration_ms,
-                    (attributes->>'output_tokens')::bigint as output_tokens
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, model, cost_usd, duration_ms, output_tokens
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             first_prompts AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    MIN(attributes->>'prompt') as prompt_text
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, MIN(prompt_text) as prompt_text
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'user_prompt'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
+                  AND event_name = 'user_prompt'
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY session_id, prompt_id
             ),
             joined AS (
                 SELECT
-                    ac.session_id,
-                    ac.prompt_id,
-                    ac.model,
-                    pc.complexity,
+                    ac.session_id, ac.prompt_id, ac.model, pc.complexity,
                     SUM(ac.cost_usd) as prompt_cost,
                     COUNT(*) as api_calls,
                     ROUND(AVG(ac.duration_ms)::numeric, 0) as avg_latency_ms,
@@ -773,26 +659,18 @@ class KpiQueryService:
                         ELSE 2
                     END as model_tier,
                     CASE pc.complexity
-                        WHEN 'simple' THEN 1
-                        WHEN 'moderate' THEN 2
-                        WHEN 'complex' THEN 3
-                        ELSE 4
+                        WHEN 'simple' THEN 1 WHEN 'moderate' THEN 2
+                        WHEN 'complex' THEN 3 ELSE 4
                     END as complexity_tier
                 FROM api_calls ac
-                JOIN prompt_complexity pc
-                  ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
                 WHERE 1=1 {model_filter} {complexity_filter}
                 GROUP BY ac.session_id, ac.prompt_id, ac.model, pc.complexity
             )
             SELECT
-                j.session_id,
-                j.prompt_id,
-                j.model,
-                j.complexity,
+                j.session_id, j.prompt_id, j.model, j.complexity,
                 ROUND(j.prompt_cost::numeric, 4) as prompt_cost,
-                j.api_calls,
-                j.avg_latency_ms,
-                j.total_output_tokens,
+                j.api_calls, j.avg_latency_ms, j.total_output_tokens,
                 CASE
                     WHEN j.model_tier - j.complexity_tier >= 2 THEN 'high'
                     WHEN j.model_tier - j.complexity_tier = 1 THEN 'medium'
@@ -800,8 +678,7 @@ class KpiQueryService:
                 END as downgrade_opportunity,
                 LEFT(COALESCE(fp.prompt_text, ''), 120) as prompt_preview
             FROM joined j
-            LEFT JOIN first_prompts fp
-              ON j.session_id = fp.session_id AND j.prompt_id = fp.prompt_id
+            LEFT JOIN first_prompts fp ON j.session_id = fp.session_id AND j.prompt_id = fp.prompt_id
             WHERE j.model_tier > j.complexity_tier
             ORDER BY j.prompt_cost DESC
             LIMIT {limit}
@@ -809,57 +686,22 @@ class KpiQueryService:
 
     def build_model_recommendation(self, days: int = 30) -> str:
         return f"""
-            WITH prompt_events AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    COUNT(*) as event_count
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
-            ),
-            prompt_complexity AS (
-                SELECT session_id, prompt_id,
-                    {self._complexity_case()} as complexity
-                FROM prompt_events
-            ),
+            WITH {self._prompt_complexity_cte(days)},
             api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'model' as model,
-                    (attributes->>'cost_usd')::double precision as cost_usd,
-                    (attributes->>'duration_ms')::double precision as duration_ms
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, model, cost_usd, duration_ms
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-            ),
-            tool_results AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    CASE WHEN attributes->>'success' = 'true' THEN 1 ELSE 0 END as is_success
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_result'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             joined AS (
-                SELECT
-                    ac.model,
-                    pc.complexity,
-                    ac.cost_usd,
-                    ac.duration_ms
+                SELECT ac.model, pc.complexity, ac.cost_usd, ac.duration_ms
                 FROM api_calls ac
-                JOIN prompt_complexity pc
-                  ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
             ),
             model_stats AS (
                 SELECT
-                    model,
-                    complexity,
+                    model, complexity,
                     COUNT(*) as call_count,
                     ROUND(AVG(cost_usd)::numeric, 6) as avg_cost,
                     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)::numeric, 0) as p50_latency,
@@ -875,13 +717,8 @@ class KpiQueryService:
                 FROM model_stats
             )
             SELECT
-                model,
-                complexity,
-                call_count,
-                avg_cost,
-                p50_latency,
-                cost_rank,
-                speed_rank,
+                model, complexity, call_count, avg_cost, p50_latency,
+                cost_rank, speed_rank,
                 CASE WHEN cost_rank = 1 THEN true ELSE false END as is_cost_winner,
                 CASE WHEN speed_rank = 1 THEN true ELSE false END as is_speed_winner
             FROM ranked
@@ -890,40 +727,18 @@ class KpiQueryService:
 
     def build_savings_calculator(self, days: int = 30) -> str:
         return f"""
-            WITH prompt_events AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    COUNT(*) as event_count
-                FROM {self.logs_table}
-                WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
-            ),
-            prompt_complexity AS (
-                SELECT session_id, prompt_id,
-                    {self._complexity_case()} as complexity
-                FROM prompt_events
-            ),
+            WITH {self._prompt_complexity_cte(days)},
             api_calls AS (
-                SELECT
-                    attributes->>'session.id' as session_id,
-                    attributes->>'prompt.id' as prompt_id,
-                    attributes->>'model' as model,
-                    (attributes->>'cost_usd')::double precision as cost_usd
-                FROM {self.logs_table}
+                SELECT session_id, prompt_id, model, cost_usd
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             joined AS (
-                SELECT
-                    ac.model,
-                    pc.complexity,
-                    ac.cost_usd
+                SELECT ac.model, pc.complexity, ac.cost_usd
                 FROM api_calls ac
-                JOIN prompt_complexity pc
-                  ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
+                JOIN prompt_complexity pc ON ac.session_id = pc.session_id AND ac.prompt_id = pc.prompt_id
             ),
             cheapest AS (
                 SELECT complexity,
@@ -945,23 +760,17 @@ class KpiQueryService:
                 GROUP BY complexity
             ),
             actual AS (
-                SELECT
-                    complexity,
-                    COUNT(*) as call_count,
-                    ROUND(SUM(cost_usd)::numeric, 4) as actual_cost
+                SELECT complexity, COUNT(*) as call_count, ROUND(SUM(cost_usd)::numeric, 4) as actual_cost
                 FROM joined
                 GROUP BY complexity
             )
             SELECT
-                a.complexity,
-                a.call_count,
-                a.actual_cost,
+                a.complexity, a.call_count, a.actual_cost,
                 ROUND((a.call_count * cd.cheapest_avg_cost)::numeric, 4) as hypothetical_cost,
                 ROUND((a.actual_cost - (a.call_count * cd.cheapest_avg_cost))::numeric, 4) as potential_savings,
                 ROUND(
                     (100.0 * (a.actual_cost - (a.call_count * cd.cheapest_avg_cost))
-                    / NULLIF(a.actual_cost, 0))::numeric,
-                    1
+                    / NULLIF(a.actual_cost, 0))::numeric, 1
                 ) as savings_pct,
                 cd.cheapest_model
             FROM actual a
@@ -976,44 +785,40 @@ class KpiQueryService:
             WITH cost_data AS (
                 SELECT
                     ROUND(
-                        (100.0 * SUM((attributes->>'cache_read_tokens')::bigint) /
-                        NULLIF(SUM((attributes->>'input_tokens')::bigint)
-                             + SUM((attributes->>'cache_read_tokens')::bigint), 0))::numeric,
-                        1
+                        (100.0 * SUM(cache_read_tokens) /
+                        NULLIF(SUM(input_tokens) + SUM(cache_read_tokens), 0))::numeric, 1
                     ) as cache_hit_pct,
-                    ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as total_cost
-                FROM {self.logs_table}
+                    ROUND(SUM(cost_usd)::numeric, 4) as total_cost
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             prev_cost AS (
-                SELECT
-                    ROUND(SUM((attributes->>'cost_usd')::double precision)::numeric, 4) as prev_total_cost
-                FROM {self.logs_table}
+                SELECT ROUND(SUM(cost_usd)::numeric, 4) as prev_total_cost
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'api_request'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days * 2} days'
-                  AND attributes->>'event.timestamp' < current_date - interval '{days} days'
+                  AND event_name = 'api_request'
+                  AND event_ts >= current_date - interval '{days * 2} days'
+                  AND event_ts < current_date - interval '{days} days'
             ),
             tool_data AS (
                 SELECT
-                    ROUND((100.0 * SUM(CASE WHEN attributes->>'success' = 'true' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0))::numeric, 1)
+                    ROUND((100.0 * SUM(CASE WHEN success = 'true' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0))::numeric, 1)
                         as tool_success_rate
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.name' = 'tool_result'
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
+                  AND event_name = 'tool_result'
+                  AND event_ts >= current_date - interval '{days} days'
             ),
             prompt_durations AS (
                 SELECT
-                    EXTRACT(EPOCH FROM MAX((attributes->>'event.timestamp')::timestamp))
-                    - EXTRACT(EPOCH FROM MIN((attributes->>'event.timestamp')::timestamp))
+                    EXTRACT(EPOCH FROM MAX(event_ts)) - EXTRACT(EPOCH FROM MIN(event_ts))
                     as duration_sec
-                FROM {self.logs_table}
+                FROM {self.mat}
                 WHERE {self.service_filter}
-                  AND attributes->>'event.timestamp' >= current_date - interval '{days} days'
-                GROUP BY attributes->>'session.id', attributes->>'prompt.id'
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY session_id, prompt_id
             ),
             turnaround AS (
                 SELECT ROUND(AVG(duration_sec)::numeric, 1) as avg_turnaround_sec

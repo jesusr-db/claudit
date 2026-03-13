@@ -1,0 +1,476 @@
+{
+  "datasets": [
+    {
+      "name": "ds_total_users",
+      "displayName": "Total Users",
+      "query": "SELECT COUNT(DISTINCT attributes['user.id']) AS total_users FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code'"
+    },
+    {
+      "name": "ds_total_cost",
+      "displayName": "Total Cost",
+      "query": "SELECT ROUND(SUM(CAST(attributes['cost_usd'] AS DOUBLE)), 2) AS total_cost_usd FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'api_request'"
+    },
+    {
+      "name": "ds_total_tokens",
+      "displayName": "Total Tokens",
+      "query": "SELECT SUM(CAST(attributes['input_tokens'] AS BIGINT) + CAST(attributes['output_tokens'] AS BIGINT) + CAST(attributes['cache_read_tokens'] AS BIGINT) + CAST(attributes['cache_creation_tokens'] AS BIGINT)) AS total_tokens FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'api_request'"
+    },
+    {
+      "name": "ds_total_sessions",
+      "displayName": "Total Sessions",
+      "query": "SELECT COUNT(DISTINCT attributes['session.id']) AS total_sessions FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code'"
+    },
+    {
+      "name": "ds_active_time",
+      "displayName": "Active Time",
+      "query": "SELECT ROUND(SUM(CAST(attributes['duration_ms'] AS DOUBLE)) / 1000, 0) AS active_time_seconds FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'api_request'"
+    },
+    {
+      "name": "ds_cost_over_time",
+      "displayName": "Cost Over Time",
+      "query": "SELECT DATE_TRUNC('HOUR', CAST(attributes['event.timestamp'] AS TIMESTAMP)) AS time_bucket, ROUND(SUM(CAST(attributes['cost_usd'] AS DOUBLE)), 4) AS cost_usd FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'api_request' GROUP BY 1 ORDER BY 1"
+    },
+    {
+      "name": "ds_token_usage",
+      "displayName": "Token Usage Over Time",
+      "query": "SELECT DATE_TRUNC('HOUR', CAST(attributes['event.timestamp'] AS TIMESTAMP)) AS time_bucket, SUM(CAST(attributes['input_tokens'] AS BIGINT)) AS input_tokens, SUM(CAST(attributes['output_tokens'] AS BIGINT)) AS output_tokens, SUM(CAST(attributes['cache_read_tokens'] AS BIGINT)) AS cache_read_tokens, SUM(CAST(attributes['cache_creation_tokens'] AS BIGINT)) AS cache_creation_tokens FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'api_request' GROUP BY 1 ORDER BY 1"
+    },
+    {
+      "name": "ds_event_volume",
+      "displayName": "Event Volume by Type",
+      "query": "SELECT DATE_TRUNC('HOUR', CAST(attributes['event.timestamp'] AS TIMESTAMP)) AS time_bucket, attributes['event.name'] AS event_type, COUNT(*) AS event_count FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] IN ('api_error', 'api_request', 'tool_decision', 'tool_result', 'user_prompt') GROUP BY 1, 2 ORDER BY 1"
+    },
+    {
+      "name": "ds_lines_added",
+      "displayName": "Lines of Code Added",
+      "query": "/* lines_added attribute may not exist yet - placeholder */ SELECT COALESCE(SUM(CAST(attributes['lines_added'] AS BIGINT)), 0) AS lines_added FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result'"
+    },
+    {
+      "name": "ds_lines_removed",
+      "displayName": "Lines of Code Removed",
+      "query": "/* lines_removed attribute may not exist yet - placeholder */ SELECT COALESCE(SUM(CAST(attributes['lines_removed'] AS BIGINT)), 0) AS lines_removed FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result'"
+    },
+    {
+      "name": "ds_lines_over_time",
+      "displayName": "Lines of Code Over Time",
+      "query": "/* lines_added/lines_removed attributes may not exist yet - placeholder */ SELECT DATE_TRUNC('HOUR', CAST(attributes['event.timestamp'] AS TIMESTAMP)) AS time_bucket, COALESCE(SUM(CAST(attributes['lines_added'] AS BIGINT)), 0) AS lines_added, COALESCE(SUM(CAST(attributes['lines_removed'] AS BIGINT)), 0) AS lines_removed FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result' GROUP BY 1 ORDER BY 1"
+    },
+    {
+      "name": "ds_git_commits",
+      "displayName": "Git Commits",
+      "query": "SELECT COUNT(*) AS git_commits FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result' AND attributes['tool_name'] LIKE '%Bash%' AND body LIKE '%git commit%'"
+    },
+    {
+      "name": "ds_pull_requests",
+      "displayName": "Pull Requests",
+      "query": "SELECT COUNT(*) AS pull_requests FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result' AND attributes['tool_name'] LIKE '%Bash%' AND body LIKE '%gh pr create%'"
+    },
+    {
+      "name": "ds_prs_over_time",
+      "displayName": "PRs Over Time",
+      "query": "SELECT DATE_TRUNC('DAY', CAST(attributes['event.timestamp'] AS TIMESTAMP)) AS time_bucket, COUNT(*) AS pr_count FROM vdm_classic_rikfy0_catalog.zerobus.otel_logs WHERE resource.attributes['service.name'] = 'claude-code' AND attributes['event.name'] = 'tool_result' AND attributes['tool_name'] LIKE '%Bash%' AND body LIKE '%gh pr create%' GROUP BY 1 ORDER BY 1"
+    }
+  ],
+  "pages": [
+    {
+      "name": "page_ccm01",
+      "displayName": "Claude Code Monitoring",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "w_header_01",
+            "textbox_spec": "## ANTHROPIC CLAUDE CODE MONITORING\nMonitoring Claude Code CLI sessions: usage, cost, tokens, and engineering output."
+          },
+          "position": { "x": 0, "y": 0, "width": 6, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_kpi_users",
+            "queries": [
+              {
+                "name": "q_kpi_users",
+                "query": {
+                  "datasetName": "ds_total_users",
+                  "fields": [
+                    { "name": "total_users", "expression": "`total_users`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_users", "displayName": "Total Users" }
+              }
+            }
+          },
+          "position": { "x": 0, "y": 1, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_kpi_cost",
+            "queries": [
+              {
+                "name": "q_kpi_cost",
+                "query": {
+                  "datasetName": "ds_total_cost",
+                  "fields": [
+                    { "name": "total_cost_usd", "expression": "`total_cost_usd`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_cost_usd", "displayName": "Total Cost (USD)" }
+              }
+            }
+          },
+          "position": { "x": 1, "y": 1, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_kpi_tokens",
+            "queries": [
+              {
+                "name": "q_kpi_tokens",
+                "query": {
+                  "datasetName": "ds_total_tokens",
+                  "fields": [
+                    { "name": "total_tokens", "expression": "`total_tokens`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_tokens", "displayName": "Total Tokens" }
+              }
+            }
+          },
+          "position": { "x": 2, "y": 1, "width": 2, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_kpi_sessions",
+            "queries": [
+              {
+                "name": "q_kpi_sessions",
+                "query": {
+                  "datasetName": "ds_total_sessions",
+                  "fields": [
+                    { "name": "total_sessions", "expression": "`total_sessions`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "total_sessions", "displayName": "Total Sessions" }
+              }
+            }
+          },
+          "position": { "x": 4, "y": 1, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_kpi_active",
+            "queries": [
+              {
+                "name": "q_kpi_active",
+                "query": {
+                  "datasetName": "ds_active_time",
+                  "fields": [
+                    { "name": "active_time_seconds", "expression": "`active_time_seconds`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "active_time_seconds", "displayName": "Active Time (seconds)" }
+              }
+            }
+          },
+          "position": { "x": 5, "y": 1, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_header_trends",
+            "textbox_spec": "## TRENDS AND COST BREAKDOWN"
+          },
+          "position": { "x": 0, "y": 2, "width": 6, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_cost_time",
+            "queries": [
+              {
+                "name": "q_cost_time",
+                "query": {
+                  "datasetName": "ds_cost_over_time",
+                  "fields": [
+                    { "name": "time_bucket", "expression": "`time_bucket`" },
+                    { "name": "cost_usd", "expression": "`cost_usd`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "line",
+              "encodings": {
+                "x": { "fieldName": "time_bucket", "scale": { "type": "temporal" }, "displayName": "Time" },
+                "y": { "fieldName": "cost_usd", "scale": { "type": "quantitative" }, "displayName": "Cost (USD)" }
+              }
+            }
+          },
+          "position": { "x": 0, "y": 3, "width": 2, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "w_token_time",
+            "queries": [
+              {
+                "name": "q_token_time",
+                "query": {
+                  "datasetName": "ds_token_usage",
+                  "fields": [
+                    { "name": "time_bucket", "expression": "`time_bucket`" },
+                    { "name": "input_tokens", "expression": "`input_tokens`" },
+                    { "name": "output_tokens", "expression": "`output_tokens`" },
+                    { "name": "cache_read_tokens", "expression": "`cache_read_tokens`" },
+                    { "name": "cache_creation_tokens", "expression": "`cache_creation_tokens`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "bar",
+              "encodings": {
+                "x": { "fieldName": "time_bucket", "scale": { "type": "temporal" }, "displayName": "Time" },
+                "y": { "fieldName": "input_tokens", "scale": { "type": "quantitative" }, "displayName": "Input Tokens" },
+                "series": { "fieldName": "token_type" }
+              }
+            }
+          },
+          "position": { "x": 2, "y": 3, "width": 2, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "w_event_vol",
+            "queries": [
+              {
+                "name": "q_event_vol",
+                "query": {
+                  "datasetName": "ds_event_volume",
+                  "fields": [
+                    { "name": "time_bucket", "expression": "`time_bucket`" },
+                    { "name": "event_type", "expression": "`event_type`" },
+                    { "name": "event_count", "expression": "`event_count`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "area",
+              "encodings": {
+                "x": { "fieldName": "time_bucket", "scale": { "type": "temporal" }, "displayName": "Time" },
+                "y": { "fieldName": "event_count", "scale": { "type": "quantitative" }, "displayName": "Event Count" },
+                "color": { "fieldName": "event_type", "scale": { "type": "categorical" }, "displayName": "Event Type" }
+              }
+            }
+          },
+          "position": { "x": 4, "y": 3, "width": 2, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "w_header_eng",
+            "textbox_spec": "## ENGINEERING METRICS"
+          },
+          "position": { "x": 0, "y": 5, "width": 6, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_lines_add",
+            "queries": [
+              {
+                "name": "q_lines_add",
+                "query": {
+                  "datasetName": "ds_lines_added",
+                  "fields": [
+                    { "name": "lines_added", "expression": "`lines_added`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "lines_added", "displayName": "Lines of Code Added" }
+              }
+            }
+          },
+          "position": { "x": 0, "y": 6, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_lines_rem",
+            "queries": [
+              {
+                "name": "q_lines_rem",
+                "query": {
+                  "datasetName": "ds_lines_removed",
+                  "fields": [
+                    { "name": "lines_removed", "expression": "`lines_removed`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "lines_removed", "displayName": "Lines of Code Removed" }
+              }
+            }
+          },
+          "position": { "x": 1, "y": 6, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_lines_time",
+            "queries": [
+              {
+                "name": "q_lines_time",
+                "query": {
+                  "datasetName": "ds_lines_over_time",
+                  "fields": [
+                    { "name": "time_bucket", "expression": "`time_bucket`" },
+                    { "name": "lines_added", "expression": "`lines_added`" },
+                    { "name": "lines_removed", "expression": "`lines_removed`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "line",
+              "encodings": {
+                "x": { "fieldName": "time_bucket", "scale": { "type": "temporal" }, "displayName": "Time" },
+                "y": { "fieldName": "lines_added", "scale": { "type": "quantitative" }, "displayName": "Lines Added" },
+                "y2": { "fieldName": "lines_removed", "scale": { "type": "quantitative" }, "displayName": "Lines Removed" }
+              }
+            }
+          },
+          "position": { "x": 2, "y": 6, "width": 4, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "w_git_commits",
+            "queries": [
+              {
+                "name": "q_git_commits",
+                "query": {
+                  "datasetName": "ds_git_commits",
+                  "fields": [
+                    { "name": "git_commits", "expression": "`git_commits`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "git_commits", "displayName": "Git Commits" }
+              }
+            }
+          },
+          "position": { "x": 0, "y": 7, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_pull_reqs",
+            "queries": [
+              {
+                "name": "q_pull_reqs",
+                "query": {
+                  "datasetName": "ds_pull_requests",
+                  "fields": [
+                    { "name": "pull_requests", "expression": "`pull_requests`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "pull_requests", "displayName": "Pull Requests" }
+              }
+            }
+          },
+          "position": { "x": 1, "y": 7, "width": 1, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "w_prs_time",
+            "queries": [
+              {
+                "name": "q_prs_time",
+                "query": {
+                  "datasetName": "ds_prs_over_time",
+                  "fields": [
+                    { "name": "time_bucket", "expression": "`time_bucket`" },
+                    { "name": "pr_count", "expression": "`pr_count`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "line",
+              "encodings": {
+                "x": { "fieldName": "time_bucket", "scale": { "type": "temporal" }, "displayName": "Time" },
+                "y": { "fieldName": "pr_count", "scale": { "type": "quantitative" }, "displayName": "PRs" }
+              }
+            }
+          },
+          "position": { "x": 2, "y": 8, "width": 4, "height": 2 }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": { "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED" },
+    "applyModeEnabled": false
+  }
+}

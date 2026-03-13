@@ -25,6 +25,9 @@
 - Backend: FastAPI routers pattern, one router per domain
 - Frontend: TypeScript strict, functional components
 
+## Deployment Rules
+- **All assets supporting the Claudit app MUST be deployable through Databricks Asset Bundles (DAB).** Do not create bespoke artifacts directly via the API — unless it's strictly for testing purposes.
+
 ## Context Management
 - Use subagents for exploratory reads (3+ files), test runs, and search operations
 - Keep edits and decision-making in the main conversation

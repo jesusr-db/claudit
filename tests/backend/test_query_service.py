@@ -9,8 +9,8 @@ def svc():
 
 def test_build_sessions_list_query(svc):
     query = svc.build_sessions_list_query(limit=10, offset=0)
-    assert "otel_logs" in query
-    assert "session.id" in query
+    assert "otel_logs_mat" in query
+    assert "session_id" in query
     assert "GROUP BY" in query
     assert "LIMIT 10" in query
     assert "first_prompt" in query
@@ -23,7 +23,7 @@ def test_build_session_timeline_query(svc):
     query = svc.build_session_timeline_query(
         session_id="996a6297-0787-454a-94b8-96191aa0a22c"
     )
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "996a6297" in query
     assert "ORDER BY" in query
 
@@ -51,19 +51,19 @@ def test_build_cost_usage_query(svc):
 
 def test_build_tool_stats_query(svc):
     query = svc.build_tool_stats_query()
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "tool_result" in query
 
 
 def test_build_error_stats_query(svc):
     query = svc.build_error_stats_query()
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "api_error" in query
 
 
 def test_build_session_detail_query(svc):
     query = svc.build_session_detail_query(session_id="996a6297")
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "996a6297" in query
     assert "GROUP BY" in query
     assert "total_cost_usd" in query
@@ -73,7 +73,7 @@ def test_build_prompt_events_query(svc):
     query = svc.build_prompt_events_query(
         session_id="996a6297", prompt_id="efeed64b"
     )
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "996a6297" in query
     assert "efeed64b" in query
     assert "tool_parameters" in query
@@ -82,7 +82,7 @@ def test_build_prompt_events_query(svc):
 
 def test_build_tool_performance_query(svc):
     query = svc.build_tool_performance_query()
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "tool_result" in query
     assert "PERCENTILE" in query
     assert "success_rate" in query
@@ -91,7 +91,7 @@ def test_build_tool_performance_query(svc):
 
 def test_build_tool_recent_calls_query(svc):
     query = svc.build_tool_recent_calls_query(tool_name="mcp_tool", limit=25)
-    assert "otel_logs" in query
+    assert "otel_logs_mat" in query
     assert "mcp_tool" in query
     assert "LIMIT 25" in query
     assert "ORDER BY" in query

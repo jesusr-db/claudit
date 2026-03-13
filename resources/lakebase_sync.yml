@@ -1,7 +1,7 @@
 resources:
   pipelines:
     lakebase_sync:
-      name: "[${bundle.target} ${workspace.current_user.short_name}] claudit-lakebase-sync"
+      name: claudit-lakebase-sync
       catalog: ${var.catalog}
       schema: zerobus_sdp
       libraries:
@@ -19,13 +19,14 @@ resources:
 
   jobs:
     lakebase_sync_scheduled:
-      name: "[${bundle.target} ${workspace.current_user.short_name}] claudit-lakebase-sync-scheduled"
+      name: claudit-lakebase-sync-scheduled
       description: "Runs the Lakebase sync pipeline every 15 minutes to keep OTEL data fresh"
       tags:
         app: claudit
       schedule:
         quartz_cron_expression: "0 0/15 * * * ?"
         timezone_id: "UTC"
+        pause_status: UNPAUSED
       tasks:
         - task_key: sync
           pipeline_task:
