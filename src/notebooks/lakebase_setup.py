@@ -2,10 +2,10 @@
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC # Lakebase Sync Setup for Claudit Observability
-# MAGIC Creates synced database tables from the SDP pipeline MVs to Lakebase Provisioned.
+# MAGIC # Lakebase Post-Sync Setup for Claudit Observability
+# MAGIC Creates PG views, materialized views, indexes, and grants SP access.
 # MAGIC
-# MAGIC **Prerequisites:** Run the `lakebase_sync` pipeline first to create the MVs.
+# MAGIC **Prerequisites:** Synced database tables must be deployed via DAB (`resources/lakebase.yml`).
 # MAGIC
 # MAGIC This notebook is **idempotent** — safe to re-run.
 
@@ -13,7 +13,7 @@
 # Parameters (set by DAB job)
 dbutils.widgets.text("catalog", "vdm_classic_rikfy0_catalog")
 dbutils.widgets.text("lakebase_instance", "claudit-db")
-dbutils.widgets.text("lakebase_database", "claudit")
+dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("app_name", "claudit-observability")
 
 catalog = dbutils.widgets.get("catalog")
@@ -36,30 +36,19 @@ app_name = dbutils.widgets.get("app_name")
 
 import uuid
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.database import (
-    SyncedDatabaseTable,
-    SyncedTableSpec,
-    SyncedTableSchedulingPolicy,
-)
 
 w = WorkspaceClient()
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 1: Verify Lakebase Instance
+# MAGIC ## Step 1: Verify Lakebase Instance & Get Connection Details
 
 # COMMAND ----------
 instance = w.database.get_database_instance(instance_name)
 assert instance.state.value == "AVAILABLE", f"Instance {instance_name} is {instance.state}, expected AVAILABLE"
 print(f"✓ Instance '{instance_name}' is AVAILABLE")
 print(f"  Host: {instance.read_write_dns}")
-print(f"  PG Version: {instance.pg_version}")
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 2: Create Database (if needed)
-
-# COMMAND ----------
 import psycopg
 
 cred = w.database.generate_database_credential(
@@ -75,116 +64,40 @@ def run_pg(sql: str, dbname: str = "postgres"):
     with psycopg.connect(conninfo, autocommit=True) as conn:
         conn.execute(sql)
 
-try:
-    run_pg(f"CREATE DATABASE {database_name};")
-    print(f"✓ Database '{database_name}' created")
-except psycopg.errors.DuplicateDatabase:
-    print(f"✓ Database '{database_name}' already exists")
-
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 3: Create Synced Database Tables
-# MAGIC Syncs the SDP pipeline MVs (with synthetic row_id PKs) to Lakebase Provisioned.
-
-# COMMAND ----------
-# MVs created by the lakebase_sync SDP pipeline, with synthetic row_id PK
-TABLES = [
-    {
-        "source": f"{catalog}.zerobus_sdp.otel_logs_pg",
-        "dest": f"{catalog}.zerobus_sdp.otel_logs_pg_synced",
-        "pk": ["row_id"],
-    },
-    {
-        "source": f"{catalog}.zerobus_sdp.otel_metrics_pg",
-        "dest": f"{catalog}.zerobus_sdp.otel_metrics_pg_synced",
-        "pk": ["row_id"],
-    },
-    {
-        "source": f"{catalog}.zerobus_sdp.otel_spans_pg",
-        "dest": f"{catalog}.zerobus_sdp.otel_spans_pg_synced",
-        "pk": ["row_id"],
-    },
-]
-
-pipeline_id = None
-sync_results = []
-
-for i, table in enumerate(TABLES, 1):
-    source = table["source"]
-    dest = table["dest"]
-    pk_cols = table["pk"]
-
-    print(f"\nSyncing table {i}/{len(TABLES)}: {source} -> {dest}")
-
-    try:
-        spec = SyncedTableSpec(
-            source_table_full_name=source,
-            scheduling_policy=SyncedTableSchedulingPolicy.SNAPSHOT,
-            primary_key_columns=pk_cols,
-        )
-        if pipeline_id is not None:
-            spec.existing_pipeline_id = pipeline_id
-
-        synced = w.database.create_synced_database_table(
-            SyncedDatabaseTable(
-                name=dest,
-                database_instance_name=instance_name,
-                logical_database_name=database_name,
-                spec=spec,
-            )
-        )
-
-        status = synced.data_synchronization_status
-        if pipeline_id is None and status and status.pipeline_id:
-            pipeline_id = status.pipeline_id
-            print(f"  Pipeline created: {pipeline_id}")
-
-        sync_results.append({"table": source, "status": "success"})
-        print(f"  ✓ Synced: {source}")
-
-    except Exception as e:
-        error_msg = str(e)
-        if "already exists" in error_msg.lower():
-            sync_results.append({"table": source, "status": "already_exists"})
-            print(f"  ✓ Already synced: {source}")
-        else:
-            sync_results.append({"table": source, "status": "error", "error": error_msg})
-            print(f"  ✗ Error syncing {source}: {error_msg}")
-
-import json
-print(f"\nSync summary: {json.dumps(sync_results, indent=2)}")
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 3b: Wait for Synced Tables to Come ONLINE
+# MAGIC ## Step 2: Wait for Synced Tables to Come ONLINE
 # MAGIC Synced tables start OFFLINE. The internal DLT sync pipeline must run to populate them in PG.
 # MAGIC We trigger the pipeline and poll until all tables reach an ONLINE state.
 
 # COMMAND ----------
 import time
 
-synced_table_names = [t["dest"] for t in TABLES]
+# Synced tables deployed via DAB (resources/lakebase.yml)
+synced_table_names = [
+    f"{catalog}.zerobus_sdp.otel_logs_pg_synced",
+    f"{catalog}.zerobus_sdp.otel_metrics_pg_synced",
+    f"{catalog}.zerobus_sdp.otel_spans_pg_synced",
+]
 
-# Discover pipeline_id from any synced table if we didn't capture it during creation
-if pipeline_id is None:
-    for name in synced_table_names:
-        try:
-            st = w.database.get_synced_database_table(name)
-            if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
-                pipeline_id = st.data_synchronization_status.pipeline_id
-                print(f"Discovered pipeline_id from existing table: {pipeline_id}")
-                break
-        except Exception:
-            pass
+# Discover pipeline_id from any synced table to trigger a refresh
+pipeline_id = None
+for name in synced_table_names:
+    try:
+        st = w.database.get_synced_database_table(name)
+        if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
+            pipeline_id = st.data_synchronization_status.pipeline_id
+            print(f"Discovered pipeline_id from {name}: {pipeline_id}")
+            break
+    except Exception:
+        pass
 
 if pipeline_id:
-    # Trigger a full refresh so synced tables get populated in PG
     print(f"Triggering sync pipeline {pipeline_id}...")
     try:
         w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=True)
         print("  Pipeline update triggered")
     except Exception as e:
-        # Pipeline may already be running
         print(f"  Pipeline trigger note: {e}")
 
 # Poll until all synced tables are ONLINE (timeout: 20 minutes)
@@ -490,12 +403,21 @@ if sp_role:
     # Grant CONNECT on database + SELECT on all tables in zerobus_sdp schema
     try:
         run_pg(f'GRANT CONNECT ON DATABASE {database_name} TO "{sp_role}";', dbname=database_name)
-        run_pg(f'GRANT USAGE ON SCHEMA zerobus_sdp TO "{sp_role}";', dbname=database_name)
+        run_pg(f'GRANT USAGE, CREATE ON SCHEMA zerobus_sdp TO "{sp_role}";', dbname=database_name)
         run_pg(f'GRANT SELECT ON ALL TABLES IN SCHEMA zerobus_sdp TO "{sp_role}";', dbname=database_name)
         run_pg(f'ALTER DEFAULT PRIVILEGES IN SCHEMA zerobus_sdp GRANT SELECT ON TABLES TO "{sp_role}";', dbname=database_name)
         print(f"  ✓ Granted database + schema + table access to {sp_role}")
     except Exception as e:
         print(f"  ✗ Grant failed: {e}")
+
+    # Transfer mat view ownership to SP so it can REFRESH them
+    mat_views = ["kpi_logs_mat", "otel_logs_mat", "otel_spans_mat"]
+    for mv in mat_views:
+        try:
+            run_pg(f'ALTER MATERIALIZED VIEW zerobus_sdp.{mv} OWNER TO "{sp_role}";', dbname=database_name)
+            print(f"  ✓ Transferred ownership of {mv} to {sp_role}")
+        except Exception as e:
+            print(f"  ✗ Ownership transfer for {mv} failed: {e}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -503,13 +425,13 @@ if sp_role:
 
 # COMMAND ----------
 print("=" * 60)
-print("Lakebase Sync Setup Complete")
+print("Lakebase Post-Sync Setup Complete")
 print("=" * 60)
 print(f"Instance:   {instance_name}")
 print(f"Database:   {database_name}")
 print(f"Host:       {instance.read_write_dns}")
-print(f"Pipeline:   {pipeline_id or 'N/A (tables already synced)'}")
-print(f"Tables:     {len([r for r in sync_results if r['status'] in ('success', 'already_exists')])}/{len(TABLES)} synced")
+print(f"Pipeline:   {pipeline_id or 'N/A'}")
+print(f"Synced tables: {len(synced_table_names)}")
 if sp_role:
     print(f"SP Access:  Granted to {sp_role}")
 else:

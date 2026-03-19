@@ -2,17 +2,11 @@ resources:
   jobs:
     lakebase_setup:
       name: claudit-lakebase-setup
-      description: "Creates synced database tables from SDP MVs to Lakebase Provisioned, grants SP access"
+      description: "Creates PG views, materialized views, indexes, and grants SP access for Lakebase"
       tags:
         app: claudit
       tasks:
-        - task_key: run_sync_pipeline
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.lakebase_sync.id}
-            full_refresh: true
-        - task_key: setup_synced_tables
-          depends_on:
-            - task_key: run_sync_pipeline
+        - task_key: setup_pg_objects
           notebook_task:
             notebook_path: ../src/notebooks/lakebase_setup.py
             base_parameters:
