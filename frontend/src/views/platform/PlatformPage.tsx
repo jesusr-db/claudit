@@ -27,6 +27,7 @@ import {
   useAiGatewayErrors,
 } from "@/shared/hooks/useApi";
 import { useTimeRange } from "@/shared/context/TimeRangeContext";
+import { formatAxisLabel } from "@/shared/utils/dates";
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -41,8 +42,7 @@ function fmtMs(ms: number): string {
 
 function fmtDateLabel(raw?: string): string {
   if (!raw) return "";
-  if (raw.length <= 10) return raw; // "2026-03-02"
-  return raw.slice(11, 16); // "HH:MM" from "yyyy-MM-dd HH:mm" or "yyyy-MM-dd HH:00"
+  return formatAxisLabel(raw);
 }
 
 /* ── AI Gateway Section ── */

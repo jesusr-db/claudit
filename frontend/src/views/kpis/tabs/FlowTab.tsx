@@ -23,6 +23,8 @@ import {
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
 import type { KpiFlowRow } from "@/types/api";
 
+import { formatDate, formatTimestamp } from "@/shared/utils/dates";
+
 function CardBox({ children }: { children: React.ReactNode }) {
   return (
     <Box
@@ -260,10 +262,10 @@ export default function FlowTab({ days = 30 }: { days?: number }) {
                     <Td isNumeric fontSize="xs">{a.active_days}</Td>
                     <Td isNumeric fontSize="xs">{a.distinct_users}</Td>
                     <Td fontSize="xs" fontFamily="mono" whiteSpace="nowrap">
-                      {a.first_seen ? new Date(a.first_seen).toLocaleDateString() : "-"}
+                      {a.first_seen ? formatDate(a.first_seen) : "-"}
                     </Td>
                     <Td fontSize="xs" fontFamily="mono" whiteSpace="nowrap">
-                      {a.last_seen ? new Date(a.last_seen).toLocaleString() : "-"}
+                      {a.last_seen ? formatTimestamp(a.last_seen) : "-"}
                     </Td>
                   </Tr>
                 ))}

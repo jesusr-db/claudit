@@ -19,17 +19,12 @@ import {
 import { FiChevronDown, FiChevronRight } from "react-icons/fi";
 import { useMcpServerLogs } from "@/shared/hooks/useApi";
 import { useTimeRange } from "@/shared/context/TimeRangeContext";
+import { formatTimestamp } from "@/shared/utils/dates";
 
 function fmtTime(ts: string): string {
   if (!ts) return "\u2014";
   try {
-    return new Date(ts).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    return formatTimestamp(ts);
   } catch {
     return ts;
   }

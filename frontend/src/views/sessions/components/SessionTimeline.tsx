@@ -3,6 +3,7 @@ import { useState, useMemo } from "react";
 import type { TimelineEvent } from "@/types/api";
 import { TimelineEventRow } from "./TimelineEvent";
 import { PromptExecutionGraph } from "./PromptExecutionGraph";
+import { formatTime } from "@/shared/utils/dates";
 
 const FILTERS = [
   { label: "All", value: undefined },
@@ -78,7 +79,7 @@ export function SessionTimeline({ events, sessionId }: Props) {
           {promptGroups.map((g) => {
             const isExpanded = expandedPrompt === g.promptId;
             const promptEvent = g.events.find((e) => e.event_name === "user_prompt");
-            const ts = new Date(g.firstEvent.timestamp).toLocaleTimeString();
+            const ts = formatTime(g.firstEvent.timestamp);
 
             return (
               <Box key={g.promptId}>

@@ -33,6 +33,7 @@ import {
   useKpiTokenWaste,
 } from "@/shared/hooks/useApi";
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
+import { formatAxisLabel } from "@/shared/utils/dates";
 
 function formatCost(val: string | number): string {
   const n = typeof val === "string" ? parseFloat(val) : val;
@@ -70,16 +71,8 @@ export default function CostTab({ days = 30 }: { days?: number }) {
   const { data: wasteData, isLoading: wasteLoading } = useKpiTokenWaste(days);
 
   const trendChart = (trendData?.trend || []).map((t) => {
-    // Backend returns "yyyy-MM-dd" for daily, "yyyy-MM-dd HH:00" for hourly, "yyyy-MM-dd HH:mm" for 5-min
     const raw = t.date || "";
-    let label: string;
-    if (raw.length <= 10) {
-      // Daily: "2026-03-02"
-      label = new Date(raw + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    } else {
-      // Hourly or 5-min: show "HH:MM"
-      label = raw.slice(11, 16);
-    }
+    const label = formatAxisLabel(raw);
     return {
       date: label,
       daily_cost: parseFloat(t.daily_cost || "0"),

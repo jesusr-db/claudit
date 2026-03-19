@@ -2,6 +2,7 @@ import { Box, Heading, VStack, HStack, Text, Icon, Spinner, SimpleGrid } from "@
 import { Link } from "react-router-dom";
 import { FiTrendingUp, FiTrendingDown, FiMinus, FiArrowRight } from "react-icons/fi";
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
+import { formatAxisLabel } from "@/shared/utils/dates";
 import {
   AreaChart,
   Area,
@@ -56,7 +57,7 @@ function CostTrendChart({ days }: { days: number }) {
   if (trend.length === 0) return <Text color="gray.400" fontSize="sm">No cost data</Text>;
 
   const chartData = trend.map((t) => ({
-    date: days < 1 ? t.date.slice(11, 16) : days <= 1 ? t.date.slice(11, 16) : t.date.slice(5, 10),
+    date: formatAxisLabel(t.date),
     cost: parseFloat(t.daily_cost || "0"),
   }));
 
@@ -87,7 +88,7 @@ function TokenUsageChart({ days }: { days: number }) {
   if (trend.length === 0) return <Text color="gray.400" fontSize="sm">No token data</Text>;
 
   const chartData = trend.map((t) => ({
-    date: days < 1 ? t.date.slice(11, 16) : days <= 1 ? t.date.slice(11, 16) : t.date.slice(5, 10),
+    date: formatAxisLabel(t.date),
     input: parseInt(t.input_tokens || "0", 10),
     output: parseInt(t.output_tokens || "0", 10),
     cache: parseInt(t.cache_read_tokens || "0", 10),

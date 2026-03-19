@@ -19,6 +19,7 @@ import {
   useMcpErrors,
 } from "@/shared/hooks/useApi";
 import { useTimeRange } from "@/shared/context/TimeRangeContext";
+import { formatTimestamp } from "@/shared/utils/dates";
 
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
@@ -28,7 +29,7 @@ function fmtMs(ms: number): string {
 function fmtTime(ts: string): string {
   if (!ts) return "\u2014";
   try {
-    return new Date(ts).toLocaleString();
+    return formatTimestamp(ts);
   } catch {
     return ts;
   }

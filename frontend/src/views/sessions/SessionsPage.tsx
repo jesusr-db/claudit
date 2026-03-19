@@ -27,6 +27,7 @@ import { useTimeRange } from "@/shared/context/TimeRangeContext";
 import { SessionCard } from "./components/SessionCard";
 import { SessionTimeline } from "./components/SessionTimeline";
 import type { SessionSummary } from "@/types/api";
+import { formatAxisLabel } from "@/shared/utils/dates";
 
 /* ── helpers ── */
 
@@ -251,11 +252,7 @@ export default function SessionsPage() {
     for (const s of sessions) {
       const dk = dateKey(s.start_time, granularity);
       if (!rowMap.has(dk)) {
-        const displayDate = granularity === "5min"
-          ? dk.slice(11, 16)  // "HH:MM"
-          : granularity === "hour"
-          ? dk.slice(11, 13) + ":00"
-          : new Date(dk + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const displayDate = formatAxisLabel(dk);
         rowMap.set(dk, {
           date: dk,
           displayDate,
@@ -425,9 +422,7 @@ export default function SessionsPage() {
           {selectedDate && (
             <HStack spacing={2}>
               <Badge variant="subtle" colorScheme="brand" fontSize="xs" px={2} py={1}>
-                Filtered: {granularity === "day"
-                  ? new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
-                  : selectedDate.slice(11)}
+                Filtered: {formatAxisLabel(selectedDate)}
               </Badge>
               <Text fontSize="xs" color="gray.500">
                 {filteredSessions.length} session{filteredSessions.length !== 1 ? "s" : ""}

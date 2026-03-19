@@ -8,6 +8,7 @@ import {
   Box,
 } from "@chakra-ui/react";
 import type { SessionSummary } from "@/types/api";
+import { formatTimestamp } from "@/shared/utils/dates";
 
 export interface SessionTurnaroundStats {
   avg: number;
@@ -36,7 +37,7 @@ function workColor(sec: number): string {
 }
 
 export function SessionCard({ session, isExpanded, onClick, turnaround }: Props) {
-  const ts = new Date(session.start_time).toLocaleString();
+  const ts = formatTimestamp(session.start_time);
   const prompt = session.first_prompt || "No prompt recorded";
   const errors = parseInt(session.errors);
   const cost = parseFloat(session.total_cost_usd || "0");

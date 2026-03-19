@@ -1,5 +1,6 @@
 import { Box, HStack, Text, Badge, VStack } from "@chakra-ui/react";
 import type { TimelineEvent as TEvent } from "@/types/api";
+import { formatTime } from "@/shared/utils/dates";
 
 const EVENT_COLORS: Record<string, string> = {
   user_prompt: "teal",
@@ -24,7 +25,7 @@ interface Props {
 export function TimelineEventRow({ event }: Props) {
   const color = EVENT_COLORS[event.event_name] || "gray";
   const icon = EVENT_ICONS[event.event_name] || "\u2022";
-  const ts = new Date(event.timestamp).toLocaleTimeString();
+  const ts = formatTime(event.timestamp);
 
   return (
     <Box
