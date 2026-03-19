@@ -32,3 +32,4 @@ node_modules/
 
 # Context anchor (volatile session state, not for version control)
 .claude/context-anchor.md
+.superpowers/
