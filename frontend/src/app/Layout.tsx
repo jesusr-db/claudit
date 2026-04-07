@@ -18,6 +18,7 @@ import {
   FiBarChart2,
   FiServer,
   FiTrendingUp,
+  FiSearch,
 } from "react-icons/fi";
 
 const NAV_ICONS: Record<string, React.ElementType> = {
@@ -27,6 +28,7 @@ const NAV_ICONS: Record<string, React.ElementType> = {
   "mcp-tools": FiCpu,
   kpis: FiTrendingUp,
   platform: FiBarChart2,
+  introspection: FiSearch,
 };
 
 export function Layout() {

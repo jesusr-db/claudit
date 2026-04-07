@@ -31,10 +31,11 @@ class McpQueryService:
         return ""
 
     def _server_filter_logs(self, server: Optional[str]) -> str:
-        """Server filter for logs table (still uses JSONB view)."""
+        """Server filter for logs table (still uses JSONB view).
+        Always filters to claude-code when no specific server is given."""
         if server:
             return f"AND resource_attributes->>'service.name' = '{server}'"
-        return ""
+        return "AND resource_attributes->>'service.name' = 'claude-code'"
 
     @staticmethod
     def _time_filter_spans(days: Optional[float]) -> str:
@@ -191,9 +192,10 @@ class McpQueryService:
     def build_server_detail(self, server: Optional[str] = None, days: Optional[float] = None) -> str:
         """Per-tool metrics from mcp.tool.calls counter and mcp.tool.latency histogram."""
         # Metrics table still uses JSONB (acceptable — small table)
-        server_filter_metrics = ""
         if server:
             server_filter_metrics = f"AND resource_attributes->>'service.name' = '{server}'"
+        else:
+            server_filter_metrics = "AND resource_attributes->>'service.name' = 'claude-code'"
         return f"""
             WITH tool_calls AS (
                 SELECT

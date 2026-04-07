@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import type {
   MetricsSummary,
   ToolStat,
@@ -44,6 +44,7 @@ import type {
   KpiModelRecommendation,
   KpiSavingsRow,
   KpiRightsizingDetail,
+  IntrospectionResult,
 } from "@/types/api";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -427,5 +428,28 @@ export function useKpiBadges(days = 30) {
   return useQuery<KpiBadges>({
     queryKey: ["kpis", "badges", { days }],
     queryFn: () => fetchJson(`/api/v1/kpis/badges?days=${days}`),
+  });
+}
+
+// ── Introspection Hooks ──
+
+export function useIntrospectionAnalyze() {
+  return useMutation<
+    IntrospectionResult,
+    Error,
+    { session_id: string; cross_session_days?: number }
+  >({
+    mutationFn: async (params) => {
+      const res = await fetch("/api/v1/introspection/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`API error: ${res.status} ${body}`);
+      }
+      return res.json();
+    },
   });
 }

@@ -35,7 +35,8 @@ import {
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
 import { formatAxisLabel } from "@/shared/utils/dates";
 
-function formatCost(val: string | number): string {
+function formatCost(val: string | number | null | undefined): string {
+  if (val == null) return "-";
   const n = typeof val === "string" ? parseFloat(val) : val;
   if (isNaN(n)) return "-";
   if (n >= 1) return `$${n.toFixed(2)}`;
@@ -43,7 +44,8 @@ function formatCost(val: string | number): string {
   return `$${n.toFixed(4)}`;
 }
 
-function formatTokens(n: number): string {
+function formatTokens(n: number | null | undefined): string {
+  if (n == null || isNaN(n)) return "-";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();

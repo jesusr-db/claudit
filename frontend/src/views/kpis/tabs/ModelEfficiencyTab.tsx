@@ -40,7 +40,8 @@ import {
 } from "@/shared/hooks/useApi";
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
 
-function formatCost(val: string | number): string {
+function formatCost(val: string | number | null | undefined): string {
+  if (val == null) return "-";
   const n = typeof val === "string" ? parseFloat(val) : val;
   if (isNaN(n)) return "-";
   if (n >= 1) return `$${n.toFixed(2)}`;
@@ -48,7 +49,8 @@ function formatCost(val: string | number): string {
   return `$${n.toFixed(4)}`;
 }
 
-function formatMs(val: string | number): string {
+function formatMs(val: string | number | null | undefined): string {
+  if (val == null) return "-";
   const n = typeof val === "string" ? parseFloat(val) : val;
   if (isNaN(n)) return "-";
   if (n >= 1000) return `${(n / 1000).toFixed(1)}s`;

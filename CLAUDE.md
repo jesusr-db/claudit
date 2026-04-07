@@ -2,14 +2,14 @@
 
 ## Architecture
 - **Databricks App**: FastAPI backend + React frontend
-- **Backend**: FastAPI with routers for metrics, sessions, mcp_tools, platform, mcp_servers, kpis
+- **Backend**: FastAPI with routers for metrics, sessions, mcp_tools, platform, mcp_servers, kpis, introspection
 - **Frontend**: React + Vite + TypeScript, views/shared/app structure
 - **Data**: Unity Catalog tables in `jmr_demo.zerobus`, queried via SQL Warehouse
 - **Deployment**: `app.yaml` -> Databricks Apps, uvicorn on port 8000
 
 ## Key Files
 - `backend/main.py` — FastAPI entry, mounts routers + serves static files
-- `backend/routers/` — API routes: metrics, sessions, mcp_tools, platform, mcp_servers, kpis
+- `backend/routers/` — API routes: metrics, sessions, mcp_tools, platform, mcp_servers, kpis, introspection
 - `backend/config.py` — Environment config (CATALOG, SCHEMA_NAME, SQL_WAREHOUSE_ID)
 - `frontend/src/views/` — React page components
 - `frontend/src/shared/` — Shared components, hooks, utilities
@@ -35,6 +35,41 @@
 - Update .claude/context-anchor.md with decisions as you go
 
 ## Current Focus
-<!-- Update this when starting each session or major phase -->
-- Active feature: TBD
-- Key decisions: TBD
+- Active feature: Introspection Panel (completed)
+- Key decisions: Single FMAPI call with Llama-3.3-70B, user-initiated only, graceful degradation
+
+## Introspection
+
+### Feature "Introspection Panel" -- Phase 1: Implementation (2026-03-19)
+
+#### What worked
+- app-developer: Backend router followed existing `cached_execute` + `require_pg_executor` patterns cleanly. The established router pattern (prefix, tags, Pydantic models) made the new endpoint consistent with the rest of the codebase.
+- app-developer: Frontend component structure (IntrospectionPage, InsightCard, InsightCardFeed) integrated naturally with existing Chakra UI theme tokens (surface.card, soft-lg, soft.border).
+- app-developer: SessionDetailPage tab integration using Chakra Tabs preserved all existing timeline functionality while adding Insights tab.
+
+#### What failed or needed fixing
+- app-developer: Initial InsightCard.tsx imported from `@chakra-ui/icons` which is not installed in this project.
+  - Error: `TS2307: Cannot find module '@chakra-ui/icons'`
+  - Fix: Replaced ChevronDownIcon/ChevronRightIcon with Unicode characters, removed ListIcon and Icon imports.
+- app-developer: InsightCardFeed.tsx had unused `Box` and `Icon` imports after the icons fix.
+  - Error: `TS6133: 'Box' is declared but its value is never read`
+  - Fix: Removed unused imports.
+
+#### Patterns to watch for
+- This project does NOT have `@chakra-ui/icons` installed. Use Unicode characters or inline SVG for icons instead of Chakra icon imports.
+- Pre-existing TS unused-import warnings exist in `ModelEfficiencyTab.tsx`, `SessionsPage.tsx`, and `TurnaroundPage.tsx` -- these are not regressions.
+
+#### QA iterations
+- Attempt 1: PASS -- all 30+ checklist items validated on first attempt.
+
+### Feature "Introspection Panel" -- Phase 2: QA (2026-03-19)
+
+#### What worked
+- qa-engineer: All backend Pydantic models, SQL queries, FMAPI integration, and error handling matched spec exactly.
+- qa-engineer: All frontend types, hooks, components, and navigation matched spec. No `any` types, no auto-triggers.
+
+#### What failed or needed fixing
+- Nothing -- QA passed on first attempt after TypeScript compilation fixes in Phase 1.
+
+#### Patterns to watch for
+- The `cached_execute` function in `backend/cache.py` always calls `require_pg_executor()` which raises HTTP 503 if Lakebase is not configured. This is the standard pattern for all data queries and should be relied upon for graceful degradation.

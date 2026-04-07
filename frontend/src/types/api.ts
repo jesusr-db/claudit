@@ -477,3 +477,33 @@ export interface KpiBadges {
   tool_success_rate: string;
   avg_turnaround_sec: string;
 }
+
+// ── Introspection Types ──
+
+export interface InsightCardOccurrence {
+  label: string;
+  event_seq: number;
+}
+
+export interface CrossSessionContext {
+  count: number;
+  total: number;
+}
+
+export interface InsightCard {
+  type: 'skill_forgetting' | 'tool_retry' | 'context_drift' | 'inefficiency';
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  description: string;
+  occurrences: InsightCardOccurrence[];
+  root_cause: string;
+  best_practices: string[];
+  cross_session: CrossSessionContext | null;
+}
+
+export interface IntrospectionResult {
+  session_id: string;
+  analyzed_at: string;
+  cards: InsightCard[];
+  analysis_error: string | null;
+}

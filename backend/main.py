@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
-from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router, mcp_servers_router, kpis_router
+from backend.routers import metrics_router, sessions_router, mcp_tools_router, platform_router, mcp_servers_router, kpis_router, introspection_router
 from backend.executors import get_pg_executor
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ app.include_router(mcp_tools_router)
 app.include_router(platform_router)
 app.include_router(mcp_servers_router)
 app.include_router(kpis_router)
+app.include_router(introspection_router)
 
 
 @app.get("/health")
@@ -38,13 +39,21 @@ async def health_check():
     pg = get_pg_executor()
     if pg is None:
         pg_status = "not_configured"
+        matview_counts = {}
     else:
         try:
             pg.execute("SELECT 1")
             pg_status = "connected"
         except Exception as e:
             pg_status = f"error: {e}"
-    return {"status": "healthy", "lakebase": pg_status}
+        matview_counts = {}
+        for mv in ["kpi_logs_mat", "otel_logs_mat", "otel_spans_mat"]:
+            try:
+                rows = pg.execute(f"SELECT COUNT(*) as cnt FROM zerobus_sdp.{mv}")
+                matview_counts[mv] = rows[0]["cnt"] if rows else "no_rows"
+            except Exception as e:
+                matview_counts[mv] = f"error: {e}"
+    return {"status": "healthy", "lakebase": pg_status, "matviews": matview_counts}
 
 
 MATVIEW_REFRESH_INTERVAL = int(os.environ.get("MATVIEW_REFRESH_INTERVAL", "900"))  # seconds, default 15min
@@ -71,6 +80,7 @@ SELECT
     (attributes::jsonb->>'prompt') as prompt_text,
     (resource_attributes::jsonb->>'service.name') as service_name
 FROM zerobus_sdp.otel_logs_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code'
 """,
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_mat_service_event_ts ON zerobus_sdp.kpi_logs_mat (service_name, event_name, event_ts)",
@@ -110,6 +120,7 @@ SELECT
     (attributes::jsonb->>'tool_result_size_bytes')::bigint as tool_result_size_bytes,
     (attributes::jsonb->>'tool_parameters') as tool_parameters
 FROM zerobus_sdp.otel_logs_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code'
 """,
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_svc_evt_ts ON zerobus_sdp.otel_logs_mat (service_name, event_name, event_ts)",
@@ -141,6 +152,7 @@ SELECT
     (attributes::jsonb->>'http.status_code')::int as http_status_code,
     (regexp_match(attributes::jsonb->>'http.url', '^(https?://[^/]+)'))[1] as http_domain
 FROM zerobus_sdp.otel_spans_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code'
 """,
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_otel_spans_mat_kind_name ON zerobus_sdp.otel_spans_mat (kind, name)",
@@ -159,21 +171,24 @@ REFRESH_QUERIES = [
 
 
 async def _ensure_matviews(pg):
-    """Create materialized views and indexes if they don't exist (app SP becomes owner)."""
+    """Drop and recreate materialized views so the app always owns them with the latest definition."""
     for name, spec in MATVIEW_DEFINITIONS.items():
         try:
-            await asyncio.to_thread(pg.execute, spec["ddl"], 120000)
-            logger.info("Ensured mat view zerobus_sdp.%s exists", name)
+            await asyncio.to_thread(
+                pg.execute, f"DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.{name} CASCADE", 30000
+            )
+            await asyncio.to_thread(pg.execute, spec["ddl"].replace("IF NOT EXISTS ", ""), 120000)
+            logger.info("Created mat view zerobus_sdp.%s", name)
             for idx in spec["indexes"]:
                 await asyncio.to_thread(pg.execute, idx, 30000)
         except Exception as e:
-            logger.warning("Failed to ensure mat view %s: %s", name, e)
+            logger.warning("Failed to create mat view %s: %s", name, e)
 
 
 async def _refresh_matviews(pg) -> int:
     """Refresh all materialized views, return count of successes."""
     results = await asyncio.gather(
-        *[asyncio.to_thread(pg.execute, q, 60000) for q in REFRESH_QUERIES],
+        *[asyncio.to_thread(pg.execute, q, 300000) for q in REFRESH_QUERIES],
         return_exceptions=True,
     )
     ok = sum(1 for r in results if not isinstance(r, Exception))
@@ -211,6 +226,9 @@ async def warm_cache():
     await _ensure_matviews(pg)
     ok = await _refresh_matviews(pg)
     logger.info("Mat view refresh: %d/%d views refreshed", ok, len(REFRESH_QUERIES))
+    if ok > 0:
+        from backend.cache import clear_cache
+        clear_cache()
 
     # Pre-fetch common KPI queries
     try:

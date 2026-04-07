@@ -2,10 +2,10 @@
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC # Lakebase Post-Sync Setup for Claudit Observability
-# MAGIC Creates PG views, materialized views, indexes, and grants SP access.
+# MAGIC # Lakebase Setup for Claudit Observability
+# MAGIC Runs the sync pipeline, creates synced tables, PG views, materialized views, indexes, and grants.
 # MAGIC
-# MAGIC **Prerequisites:** Synced database tables must be deployed via DAB (`resources/lakebase.yml`).
+# MAGIC **Prerequisites:** Lakebase instance and lakebase_sync pipeline must be deployed via DAB.
 # MAGIC
 # MAGIC This notebook is **idempotent** — safe to re-run.
 
@@ -15,11 +15,13 @@ dbutils.widgets.text("catalog", "vdm_classic_rikfy0_catalog")
 dbutils.widgets.text("lakebase_instance", "claudit-db")
 dbutils.widgets.text("lakebase_database", "databricks_postgres")
 dbutils.widgets.text("app_name", "claudit-observability")
+dbutils.widgets.text("pipeline_name", "claudit-lakebase-sync")
 
 catalog = dbutils.widgets.get("catalog")
 instance_name = dbutils.widgets.get("lakebase_instance")
 database_name = dbutils.widgets.get("lakebase_database")
 app_name = dbutils.widgets.get("app_name")
+pipeline_name = dbutils.widgets.get("pipeline_name")
 
 # COMMAND ----------
 # MAGIC %pip install -U "databricks-sdk>=0.81.0" "psycopg[binary]>=3.0"
@@ -33,6 +35,7 @@ catalog = dbutils.widgets.get("catalog")
 instance_name = dbutils.widgets.get("lakebase_instance")
 database_name = dbutils.widgets.get("lakebase_database")
 app_name = dbutils.widgets.get("app_name")
+pipeline_name = dbutils.widgets.get("pipeline_name")
 
 import uuid
 from databricks.sdk import WorkspaceClient
@@ -66,49 +69,134 @@ def run_pg(sql: str, dbname: str = "postgres"):
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 2: Wait for Synced Tables to Come ONLINE
-# MAGIC Synced tables start OFFLINE. The internal DLT sync pipeline must run to populate them in PG.
-# MAGIC We trigger the pipeline and poll until all tables reach an ONLINE state.
+# MAGIC ## Step 2: Run Lakebase Sync Pipeline
+# MAGIC The pipeline creates materialized views (`otel_logs_pg`, `otel_metrics_pg`, `otel_spans_pg`)
+# MAGIC in the `zerobus_sdp` schema. These are the source tables for the synced database tables.
 
 # COMMAND ----------
 import time
 
-# Synced tables deployed via DAB (resources/lakebase.yml)
-synced_table_names = [
-    f"{catalog}.zerobus_sdp.otel_logs_pg_synced",
-    f"{catalog}.zerobus_sdp.otel_metrics_pg_synced",
-    f"{catalog}.zerobus_sdp.otel_spans_pg_synced",
+# Find the pipeline by name (use single quotes — DLT filter syntax requires them)
+pipeline_id = None
+for p in w.pipelines.list_pipelines(filter=f"name LIKE '{pipeline_name}'"):
+    pipeline_id = p.pipeline_id
+    print(f"Found pipeline '{pipeline_name}': {pipeline_id}")
+    break
+
+if not pipeline_id:
+    raise RuntimeError(f"Pipeline '{pipeline_name}' not found. Deploy the DAB first.")
+
+# Stop any active update, then trigger a full refresh
+try:
+    w.pipelines.stop(pipeline_id=pipeline_id)
+    print("  Stopped existing pipeline update")
+    time.sleep(10)
+except Exception:
+    pass  # No active update
+
+print(f"Triggering pipeline {pipeline_id} (full refresh)...")
+update = w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=True)
+update_id = update.update_id
+print(f"  Update started: {update_id}")
+
+PIPELINE_TIMEOUT = 600  # 10 minutes
+start = time.time()
+while True:
+    elapsed = time.time() - start
+    if elapsed > PIPELINE_TIMEOUT:
+        raise TimeoutError(f"Pipeline did not complete within {PIPELINE_TIMEOUT}s")
+
+    update_info = w.pipelines.get_update(pipeline_id=pipeline_id, update_id=update_id)
+    state = update_info.update.state.value if update_info.update.state else "UNKNOWN"
+
+    if state in ("COMPLETED",):
+        print(f"✓ Pipeline completed ({int(elapsed)}s)")
+        break
+    elif state in ("FAILED", "CANCELED"):
+        raise RuntimeError(f"Pipeline {state} after {int(elapsed)}s. Check pipeline UI for details.")
+
+    print(f"  Pipeline state: {state} ({int(elapsed)}s elapsed)")
+    time.sleep(15)
+
+# Verify the materialized views exist
+schema_name = "zerobus_sdp"
+expected_mvs = ["otel_logs_pg", "otel_metrics_pg", "otel_spans_pg"]
+for mv in expected_mvs:
+    full_name = f"{catalog}.{schema_name}.{mv}"
+    try:
+        w.tables.get(full_name)
+        print(f"  ✓ {full_name} exists")
+    except Exception as e:
+        raise RuntimeError(f"Materialized view {full_name} not found after pipeline run: {e}")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 3: Create Synced Database Tables
+# MAGIC Creates synced tables via SDK with CONTINUOUS scheduling so they auto-sync.
+# MAGIC Recreates existing SNAPSHOT tables as CONTINUOUS.
+
+# COMMAND ----------
+from databricks.sdk.service.database import (
+    SyncedDatabaseTable,
+    SyncedTableSpec,
+    SyncedTableSchedulingPolicy,
+    NewPipelineSpec,
+)
+
+SYNCED_TABLE_DEFS = [
+    {"name": f"{catalog}.{schema_name}.otel_logs_pg_synced",   "source": f"{catalog}.{schema_name}.otel_logs_pg"},
+    {"name": f"{catalog}.{schema_name}.otel_metrics_pg_synced", "source": f"{catalog}.{schema_name}.otel_metrics_pg"},
+    {"name": f"{catalog}.{schema_name}.otel_spans_pg_synced",  "source": f"{catalog}.{schema_name}.otel_spans_pg"},
 ]
 
-# Discover pipeline_id from any synced table to trigger a refresh
-pipeline_id = None
-for name in synced_table_names:
+synced_table_names = []
+for defn in SYNCED_TABLE_DEFS:
+    tbl_name = defn["name"]
+    synced_table_names.append(tbl_name)
+
+    # Check if already exists
     try:
-        st = w.database.get_synced_database_table(name)
-        if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
-            pipeline_id = st.data_synchronization_status.pipeline_id
-            print(f"Discovered pipeline_id from {name}: {pipeline_id}")
-            break
+        existing = w.database.get_synced_database_table(tbl_name)
+        print(f"  - {tbl_name} already exists (skipping)")
+        continue
     except Exception:
-        pass
+        pass  # Does not exist, create it
 
-if pipeline_id:
-    print(f"Triggering sync pipeline {pipeline_id}...")
     try:
-        w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=True)
-        print("  Pipeline update triggered")
+        w.database.create_synced_database_table(
+            synced_table=SyncedDatabaseTable(
+                name=tbl_name,
+                database_instance_name=instance_name,
+                logical_database_name=database_name,
+                spec=SyncedTableSpec(
+                    source_table_full_name=defn["source"],
+                    primary_key_columns=["row_id"],
+                    scheduling_policy=SyncedTableSchedulingPolicy.SNAPSHOT,
+                    new_pipeline_spec=NewPipelineSpec(
+                        storage_catalog=catalog,
+                        storage_schema=schema_name,
+                    ),
+                ),
+            )
+        )
+        print(f"  ✓ Created synced table: {tbl_name}")
     except Exception as e:
-        print(f"  Pipeline trigger note: {e}")
+        print(f"  ✗ Failed to create {tbl_name}: {e}")
+        raise
 
-# Poll until all synced tables are ONLINE (timeout: 20 minutes)
-TIMEOUT_SECONDS = 120
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 4: Wait for Synced Tables to Come ONLINE
+# MAGIC Synced tables start OFFLINE. The internal DLT sync pipeline must run to populate them in PG.
+
+# COMMAND ----------
+SYNC_TIMEOUT = 300  # 5 minutes
 POLL_INTERVAL = 15
 start = time.time()
 
 
 def _is_table_online(table_info) -> tuple:
     """Check if a synced table is online. Returns (is_online, state_str)."""
-    # Check data_synchronization_status.detailed_state for SYNCED_TABLE_ONLINE*
     sync_status = table_info.data_synchronization_status
     if sync_status and sync_status.detailed_state:
         state_str = sync_status.detailed_state.value
@@ -116,7 +204,6 @@ def _is_table_online(table_info) -> tuple:
             return True, state_str
         return False, state_str
 
-    # Fallback: check unity_catalog_provisioning_state
     uc_state = table_info.unity_catalog_provisioning_state
     if uc_state:
         state_str = uc_state.value
@@ -127,10 +214,22 @@ def _is_table_online(table_info) -> tuple:
     return False, "UNKNOWN"
 
 
+# Trigger sync pipeline refresh on any discovered synced table
+for name in synced_table_names:
+    try:
+        st = w.database.get_synced_database_table(name)
+        if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
+            sync_pipeline_id = st.data_synchronization_status.pipeline_id
+            print(f"Triggering synced table pipeline {sync_pipeline_id}...")
+            w.pipelines.start_update(pipeline_id=sync_pipeline_id, full_refresh=True)
+            break
+    except Exception:
+        pass
+
 while True:
     elapsed = time.time() - start
-    if elapsed > TIMEOUT_SECONDS:
-        raise TimeoutError(f"Synced tables did not come ONLINE within {TIMEOUT_SECONDS}s")
+    if elapsed > SYNC_TIMEOUT:
+        raise TimeoutError(f"Synced tables did not come ONLINE within {SYNC_TIMEOUT}s")
 
     statuses = {}
     for name in synced_table_names:
@@ -154,7 +253,7 @@ while True:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 4: Create PG Views with JSONB Casts
+# MAGIC ## Step 5: Create PG Views with JSONB Casts
 # MAGIC Synced tables store JSON as TEXT. Views cast to JSONB for `->>'key'` operator support.
 
 # COMMAND ----------
@@ -218,7 +317,7 @@ for view_name, spec in VIEWS.items():
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 4b: Create KPI Materialized View & Indexes
+# MAGIC ## Step 5b: Create KPI Materialized View & Indexes
 # MAGIC Pre-extracts JSONB attributes into typed columns for fast KPI queries.
 # MAGIC Avoids TEXT→JSONB→extraction overhead on every request.
 
@@ -245,7 +344,8 @@ SELECT
     (attributes::jsonb->>'success') as success,
     (attributes::jsonb->>'prompt') as prompt_text,
     (resource_attributes::jsonb->>'service.name') as service_name
-FROM zerobus_sdp.otel_logs_pg_synced;
+FROM zerobus_sdp.otel_logs_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
 """
 
 KPI_INDEXES_DDL = [
@@ -268,7 +368,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 4c: Create otel_logs_mat — Wide Materialized View for QueryService
+# MAGIC ## Step 5c: Create otel_logs_mat — Wide Materialized View for QueryService
 # MAGIC Pre-extracts all JSONB attributes used by QueryService into typed columns.
 
 # COMMAND ----------
@@ -303,7 +403,8 @@ SELECT
     (attributes::jsonb->>'speed') as speed,
     (attributes::jsonb->>'tool_result_size_bytes')::bigint as tool_result_size_bytes,
     (attributes::jsonb->>'tool_parameters') as tool_parameters
-FROM zerobus_sdp.otel_logs_pg_synced;
+FROM zerobus_sdp.otel_logs_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
 """
 
 OTEL_LOGS_MAT_INDEXES = [
@@ -329,7 +430,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 4d: Create otel_spans_mat — Materialized View for McpQueryService
+# MAGIC ## Step 5d: Create otel_spans_mat — Materialized View for McpQueryService
 # MAGIC Pre-extracts span attributes and computes derived fields (duration, domain regex).
 
 # COMMAND ----------
@@ -353,7 +454,8 @@ SELECT
     (attributes::jsonb->>'http.url') as http_url,
     (attributes::jsonb->>'http.status_code')::int as http_status_code,
     (regexp_match(attributes::jsonb->>'http.url', '^(https?://[^/]+)'))[1] as http_domain
-FROM zerobus_sdp.otel_spans_pg_synced;
+FROM zerobus_sdp.otel_spans_pg_synced
+WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
 """
 
 OTEL_SPANS_MAT_INDEXES = [
@@ -376,7 +478,7 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 5: Grant App Service Principal Access
+# MAGIC ## Step 6: Grant App Service Principal Access
 
 # COMMAND ----------
 # Discover app's service principal client ID (the PG role name)
@@ -425,14 +527,14 @@ if sp_role:
 
 # COMMAND ----------
 print("=" * 60)
-print("Lakebase Post-Sync Setup Complete")
+print("Lakebase Setup Complete")
 print("=" * 60)
-print(f"Instance:   {instance_name}")
-print(f"Database:   {database_name}")
-print(f"Host:       {instance.read_write_dns}")
-print(f"Pipeline:   {pipeline_id or 'N/A'}")
-print(f"Synced tables: {len(synced_table_names)}")
+print(f"Instance:       {instance_name}")
+print(f"Database:       {database_name}")
+print(f"Host:           {instance.read_write_dns}")
+print(f"Sync pipeline:  {pipeline_name} ({pipeline_id})")
+print(f"Synced tables:  {len(synced_table_names)}")
 if sp_role:
-    print(f"SP Access:  Granted to {sp_role}")
+    print(f"SP Access:      Granted to {sp_role}")
 else:
-    print("SP Access:  Manual grant required")
+    print("SP Access:      Manual grant required")

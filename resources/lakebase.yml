@@ -4,42 +4,7 @@ resources:
       name: ${var.lakebase_instance}
       capacity: CU_1
 
-  synced_database_tables:
-    otel_logs_pg_synced:
-      name: ${var.catalog}.zerobus_sdp.otel_logs_pg_synced
-      database_instance_name: ${resources.database_instances.lakebase_instance.name}
-      logical_database_name: ${var.lakebase_database}
-      spec:
-        source_table_full_name: ${var.catalog}.zerobus_sdp.otel_logs_pg
-        primary_key_columns:
-          - row_id
-        scheduling_policy: SNAPSHOT
-        new_pipeline_spec:
-          storage_catalog: ${var.catalog}
-          storage_schema: zerobus_sdp
-
-    otel_metrics_pg_synced:
-      name: ${var.catalog}.zerobus_sdp.otel_metrics_pg_synced
-      database_instance_name: ${resources.database_instances.lakebase_instance.name}
-      logical_database_name: ${var.lakebase_database}
-      spec:
-        source_table_full_name: ${var.catalog}.zerobus_sdp.otel_metrics_pg
-        primary_key_columns:
-          - row_id
-        scheduling_policy: SNAPSHOT
-        new_pipeline_spec:
-          storage_catalog: ${var.catalog}
-          storage_schema: zerobus_sdp
-
-    otel_spans_pg_synced:
-      name: ${var.catalog}.zerobus_sdp.otel_spans_pg_synced
-      database_instance_name: ${resources.database_instances.lakebase_instance.name}
-      logical_database_name: ${var.lakebase_database}
-      spec:
-        source_table_full_name: ${var.catalog}.zerobus_sdp.otel_spans_pg
-        primary_key_columns:
-          - row_id
-        scheduling_policy: SNAPSHOT
-        new_pipeline_spec:
-          storage_catalog: ${var.catalog}
-          storage_schema: zerobus_sdp
+  # NOTE: synced_database_tables are NOT managed by DAB because their source
+  # tables (materialized views) are created at runtime by the lakebase_sync
+  # pipeline. Synced tables are created/destroyed by the lakebase_setup and
+  # lakebase_teardown jobs respectively.

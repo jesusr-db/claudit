@@ -14,3 +14,4 @@ resources:
               lakebase_instance: ${var.lakebase_instance}
               lakebase_database: ${var.lakebase_database}
               app_name: claudit-observability
+              pipeline_name: ${resources.pipelines.lakebase_sync.name}

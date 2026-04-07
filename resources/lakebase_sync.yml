@@ -31,3 +31,10 @@ resources:
         - task_key: sync
           pipeline_task:
             pipeline_id: ${resources.pipelines.lakebase_sync.id}
+        - task_key: refresh_synced_tables
+          depends_on:
+            - task_key: sync
+          notebook_task:
+            notebook_path: ../src/notebooks/refresh_synced_tables.py
+            base_parameters:
+              catalog: ${var.catalog}

@@ -24,6 +24,9 @@ const McpServersPage = lazy(
 const KpiHubPage = lazy(
   () => import("@/views/kpis/KpiHubPage")
 );
+const IntrospectionPage = lazy(
+  () => import("@/views/introspection/IntrospectionPage")
+);
 
 export interface ViewEntry {
   id: string;
@@ -85,6 +88,13 @@ export const viewRegistry: ViewEntry[] = [
     path: "/platform",
     component: PlatformPage,
     label: "Platform",
+    nav: true,
+  },
+  {
+    id: "introspection",
+    path: "/introspection",
+    component: IntrospectionPage,
+    label: "Introspection",
     nav: true,
   },
 ];
