@@ -6,8 +6,11 @@
 /** Parse a backend date string (UTC) into a Date object. */
 export function parseUTC(raw: string): Date {
   // Backend formats: "yyyy-MM-dd", "yyyy-MM-dd HH:00", "yyyy-MM-dd HH:mm"
+  // Frontend dateKey formats: "yyyy-MM-ddTHH" (hour granularity), "yyyy-MM-ddTHH:mm" (5-min)
   // Normalize to ISO 8601 with Z suffix so JS treats it as UTC
   if (raw.length === 10) return new Date(raw + "T00:00:00Z");
+  // "YYYY-MM-DDTHH" (13 chars, hour granularity from dateKey) → pad with :00:00Z
+  if (raw.length === 13 && raw[10] === "T") return new Date(raw + ":00:00Z");
   if (raw.includes("T")) return new Date(raw.endsWith("Z") ? raw : raw + "Z");
   // "yyyy-MM-dd HH:mm" → "yyyy-MM-ddTHH:mmZ"
   return new Date(raw.replace(" ", "T") + "Z");
