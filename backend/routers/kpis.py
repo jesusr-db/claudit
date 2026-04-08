@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -19,35 +18,10 @@ kpi_service = KpiQueryService()
 
 
 @router.post("/refresh")
-async def refresh_mat_view():
-    """Refresh all materialized views and clear the shared cache."""
-    t0 = time.monotonic()
-    pg = require_pg_executor()
-
-    refresh_queries = [
-        kpi_service.build_refresh_mat_view(),
-        "REFRESH MATERIALIZED VIEW zerobus_sdp.otel_logs_mat",
-        "REFRESH MATERIALIZED VIEW zerobus_sdp.otel_spans_mat",
-    ]
-
-    async def _refresh(q):
-        await asyncio.to_thread(pg.execute, q, 60000)
-
-    results = await asyncio.gather(
-        *[_refresh(q) for q in refresh_queries],
-        return_exceptions=True,
-    )
-
-    ok = sum(1 for r in results if not isinstance(r, Exception))
-    errors = [str(r) for r in results if isinstance(r, Exception)]
-    elapsed = (time.monotonic() - t0) * 1000
-
+async def refresh_cache():
+    """Clear the query cache. Data freshness is managed by the SDP pipeline."""
     clear_cache()
-
-    resp = {"status": "refreshed", "views_refreshed": ok, "total_views": len(refresh_queries), "elapsed_ms": round(elapsed)}
-    if errors:
-        resp["errors"] = errors
-    return resp
+    return {"status": "refreshed", "message": "Cache cleared. Data freshness is managed by the pipeline."}
 
 
 # ── Phase 1: Cost Intelligence ──

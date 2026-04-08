@@ -3,10 +3,10 @@
 # COMMAND ----------
 # MAGIC %md
 # MAGIC # Refresh Synced Tables
-# MAGIC Triggers the internal sync pipeline so SNAPSHOT-mode synced tables
+# MAGIC Triggers ALL internal sync pipelines so SNAPSHOT-mode synced tables
 # MAGIC pick up the latest data from the Delta materialized views.
 # MAGIC
-# MAGIC Runs as a downstream task in the scheduled sync job.
+# MAGIC Discovers unique pipeline IDs across all synced tables and triggers each one.
 
 # COMMAND ----------
 dbutils.widgets.text("catalog", "vdm_classic_rikfy0_catalog")
@@ -32,68 +32,72 @@ synced_table_names = [
     f"{catalog}.{schema_name}.otel_logs_pg_synced",
     f"{catalog}.{schema_name}.otel_metrics_pg_synced",
     f"{catalog}.{schema_name}.otel_spans_pg_synced",
+    f"{catalog}.{schema_name}.cc_logs_synced",
+    f"{catalog}.{schema_name}.cc_spans_synced",
 ]
 
-# Discover the sync pipeline ID from any synced table
-pipeline_id = None
+# Discover ALL unique sync pipeline IDs across synced tables
+pipeline_ids = set()
 for name in synced_table_names:
     try:
         st = w.database.get_synced_database_table(name)
         if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
-            pipeline_id = st.data_synchronization_status.pipeline_id
-            print(f"Discovered sync pipeline from {name}: {pipeline_id}")
-            break
+            pid = st.data_synchronization_status.pipeline_id
+            pipeline_ids.add(pid)
+            print(f"  {name.split('.')[-1]}: pipeline {pid}")
     except Exception as e:
-        print(f"  Could not check {name}: {e}")
+        print(f"  {name.split('.')[-1]}: skip ({e})")
 
-if not pipeline_id:
-    print("No sync pipeline found — synced tables may not exist yet. Skipping.")
+if not pipeline_ids:
+    print("No sync pipelines found — synced tables may not exist yet. Skipping.")
     dbutils.notebook.exit("skipped")
 
-# Stop any active update first, then trigger a fresh one
-try:
-    w.pipelines.stop(pipeline_id=pipeline_id)
-    print("Stopped existing pipeline update, waiting for it to settle...")
-    time.sleep(15)
-except Exception:
-    pass
+print(f"\nFound {len(pipeline_ids)} unique sync pipeline(s)")
 
-print(f"Triggering sync pipeline {pipeline_id} (full_refresh=True)...")
-try:
-    update_resp = w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=True)
-    update_id = update_resp.update_id
-    print(f"  Update started: {update_id}")
-except Exception as e:
-    print(f"  Trigger failed: {e}")
-    dbutils.notebook.exit(f"trigger_failed: {e}")
-
-# Wait for the pipeline update to complete
-TIMEOUT = 300
-start = time.time()
-while True:
-    elapsed = time.time() - start
-    if elapsed > TIMEOUT:
-        print(f"Timed out after {TIMEOUT}s")
-        break
+# Trigger each pipeline
+update_tracking = {}
+for pid in pipeline_ids:
+    try:
+        w.pipelines.stop(pipeline_id=pid)
+        time.sleep(5)
+    except Exception:
+        pass
 
     try:
-        update_info = w.pipelines.get_update(pipeline_id=pipeline_id, update_id=update_id)
-        state = update_info.update.state.value if update_info.update.state else "UNKNOWN"
-
-        if state in ("COMPLETED",):
-            print(f"✓ Sync pipeline completed ({int(elapsed)}s)")
-            break
-        elif state in ("FAILED", "CANCELED"):
-            print(f"✗ Sync pipeline {state} ({int(elapsed)}s)")
-            break
-
-        print(f"  Pipeline state: {state} ({int(elapsed)}s)")
+        resp = w.pipelines.start_update(pipeline_id=pid, full_refresh=True)
+        update_tracking[pid] = resp.update_id
+        print(f"  Triggered pipeline {pid}: update {resp.update_id}")
     except Exception as e:
-        print(f"  Poll error: {e}")
+        print(f"  Failed to trigger {pid}: {e}")
 
-    time.sleep(15)
+# Wait for all pipelines to complete
+TIMEOUT = 300
+start = time.time()
+while update_tracking:
+    elapsed = time.time() - start
+    if elapsed > TIMEOUT:
+        print(f"Timed out after {TIMEOUT}s — {len(update_tracking)} pipeline(s) still running")
+        break
 
-# Verify all synced tables are online
+    done = []
+    for pid, uid in update_tracking.items():
+        try:
+            info = w.pipelines.get_update(pipeline_id=pid, update_id=uid)
+            state = info.update.state.value if info.update.state else "UNKNOWN"
+            if state in ("COMPLETED", "FAILED", "CANCELED"):
+                print(f"  Pipeline {pid}: {state} ({int(elapsed)}s)")
+                done.append(pid)
+        except Exception:
+            pass
+
+    for pid in done:
+        del update_tracking[pid]
+
+    if update_tracking:
+        time.sleep(15)
+
+# Final status
+print("\nSynced table status:")
 for name in synced_table_names:
     try:
         st = w.database.get_synced_database_table(name)
@@ -101,7 +105,7 @@ for name in synced_table_names:
         if sync_status and sync_status.detailed_state:
             print(f"  {name.split('.')[-1]}: {sync_status.detailed_state.value}")
         else:
-            print(f"  {name.split('.')[-1]}: unknown state")
+            print(f"  {name.split('.')[-1]}: unknown")
     except Exception as e:
         print(f"  {name.split('.')[-1]}: error - {e}")
 

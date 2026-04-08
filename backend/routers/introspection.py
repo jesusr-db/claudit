@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.cache import cached_execute
+from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ def _build_event_extraction_query(session_id: str) -> str:
     return f"""
 SELECT event_name, event_seq, prompt_id, prompt_text, tool_name,
        success, duration_ms, error, status_code, user_id
-FROM zerobus_sdp.otel_logs_mat
+FROM {settings.otel_logs_mat_table}
 WHERE session_id = '{safe_id}'
   AND event_name IN ('user_prompt', 'tool_result', 'api_error', 'tool_decision')
 ORDER BY event_seq ASC
@@ -115,7 +116,7 @@ FROM (
     BOOL_OR(event_name = 'user_prompt'
       AND prompt_text ILIKE ANY(ARRAY['%remember to use%','%don''t forget%','%use the skill%','%invoke the%']))
                                                                       AS has_skill_remind
-  FROM zerobus_sdp.otel_logs_mat
+  FROM {settings.otel_logs_mat_table}
   WHERE user_id = '{safe_uid}'
     AND event_ts >= NOW() - INTERVAL '{int(cross_session_days)} days'
   GROUP BY session_id

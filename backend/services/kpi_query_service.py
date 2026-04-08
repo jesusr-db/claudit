@@ -24,7 +24,6 @@ class KpiQueryService:
         'build_rightsizing_details', 'build_model_recommendation',
         'build_savings_calculator',
         'build_kpi_badges',
-        'build_refresh_mat_view',
     }
 
     SQL_METHODS = {
@@ -43,11 +42,6 @@ class KpiQueryService:
     @property
     def service_filter(self) -> str:
         return f"service_name = '{self.SERVICE_NAME}'"
-
-    # ── Materialized view refresh ──
-
-    def build_refresh_mat_view(self) -> str:
-        return f"REFRESH MATERIALIZED VIEW {self.mat}"
 
     # ── Phase 1: Cost Intelligence ──
 

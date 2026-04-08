@@ -53,6 +53,8 @@ SYNCED_TABLES = [
     f"{catalog}.zerobus_sdp.otel_logs_pg_synced",
     f"{catalog}.zerobus_sdp.otel_metrics_pg_synced",
     f"{catalog}.zerobus_sdp.otel_spans_pg_synced",
+    f"{catalog}.zerobus_sdp.cc_logs_synced",
+    f"{catalog}.zerobus_sdp.cc_spans_synced",
 ]
 
 for name in SYNCED_TABLES:
@@ -86,7 +88,16 @@ def run_pg(sql: str, dbname: str = "postgres"):
     with psycopg.connect(conninfo, autocommit=True) as conn:
         conn.execute(sql)
 
-# Drop views first (they reference synced tables which may already be gone)
+# Drop legacy PG materialized views
+LEGACY_MAT_VIEWS = ["kpi_logs_mat", "otel_logs_mat", "otel_spans_mat"]
+for mv in LEGACY_MAT_VIEWS:
+    try:
+        run_pg(f"DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.{mv} CASCADE;", dbname=database_name)
+        print(f"  ✓ Dropped legacy mat view: {mv}")
+    except Exception as e:
+        print(f"  - Mat view {mv}: {e}")
+
+# Drop views (they reference synced tables which may already be gone)
 PG_VIEWS = ["otel_logs", "otel_metrics", "otel_spans"]
 
 for view in PG_VIEWS:

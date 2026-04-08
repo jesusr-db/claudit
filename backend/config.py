@@ -22,18 +22,18 @@ class Settings(BaseSettings):
 
     @property
     def kpi_logs_mat_table(self) -> str:
-        """Materialized view with pre-extracted columns for KPI queries (no JSONB cast overhead)."""
-        return "zerobus_sdp.kpi_logs_mat"
+        """Pre-shaped Claude Code logs from SDP pipeline (synced table)."""
+        return "zerobus_sdp.cc_logs_synced"
 
     @property
     def otel_logs_mat_table(self) -> str:
-        """Wide materialized view covering all QueryService columns (no JSONB cast overhead)."""
-        return "zerobus_sdp.otel_logs_mat"
+        """Pre-shaped Claude Code logs from SDP pipeline (same source as kpi_logs_mat)."""
+        return "zerobus_sdp.cc_logs_synced"
 
     @property
     def otel_spans_mat_table(self) -> str:
-        """Materialized view with pre-extracted span attributes (no JSONB cast overhead)."""
-        return "zerobus_sdp.otel_spans_mat"
+        """Pre-shaped Claude Code spans from SDP pipeline (synced table)."""
+        return "zerobus_sdp.cc_spans_synced"
 
     @property
     def otel_metrics_table(self) -> str:

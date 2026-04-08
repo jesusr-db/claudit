@@ -11,10 +11,14 @@ resources:
             path: ../src/pipelines/lakebase_sync/otel_metrics_pg.sql
         - file:
             path: ../src/pipelines/lakebase_sync/otel_spans_pg.sql
+        - file:
+            path: ../src/pipelines/lakebase_sync/cc_logs.sql
+        - file:
+            path: ../src/pipelines/lakebase_sync/cc_spans.sql
       configuration:
         source_catalog: ${var.catalog}
         source_schema: ${var.schema}
-      development: true
+      development: false
       serverless: true
 
   jobs:
@@ -31,6 +35,7 @@ resources:
         - task_key: sync
           pipeline_task:
             pipeline_id: ${resources.pipelines.lakebase_sync.id}
+            full_refresh: true
         - task_key: refresh_synced_tables
           depends_on:
             - task_key: sync

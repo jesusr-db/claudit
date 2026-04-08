@@ -120,7 +120,7 @@ while True:
 
 # Verify the materialized views exist
 schema_name = "zerobus_sdp"
-expected_mvs = ["otel_logs_pg", "otel_metrics_pg", "otel_spans_pg"]
+expected_mvs = ["otel_logs_pg", "otel_metrics_pg", "otel_spans_pg", "cc_logs", "cc_spans"]
 for mv in expected_mvs:
     full_name = f"{catalog}.{schema_name}.{mv}"
     try:
@@ -147,6 +147,8 @@ SYNCED_TABLE_DEFS = [
     {"name": f"{catalog}.{schema_name}.otel_logs_pg_synced",   "source": f"{catalog}.{schema_name}.otel_logs_pg"},
     {"name": f"{catalog}.{schema_name}.otel_metrics_pg_synced", "source": f"{catalog}.{schema_name}.otel_metrics_pg"},
     {"name": f"{catalog}.{schema_name}.otel_spans_pg_synced",  "source": f"{catalog}.{schema_name}.otel_spans_pg"},
+    {"name": f"{catalog}.{schema_name}.cc_logs_synced",        "source": f"{catalog}.{schema_name}.cc_logs"},
+    {"name": f"{catalog}.{schema_name}.cc_spans_synced",       "source": f"{catalog}.{schema_name}.cc_spans"},
 ]
 
 synced_table_names = []
@@ -317,164 +319,53 @@ for view_name, spec in VIEWS.items():
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 5b: Create KPI Materialized View & Indexes
-# MAGIC Pre-extracts JSONB attributes into typed columns for fast KPI queries.
-# MAGIC Avoids TEXT→JSONB→extraction overhead on every request.
+# MAGIC ## Step 5b: Create Indexes on Pre-Shaped Synced Tables
+# MAGIC The cc_logs_synced and cc_spans_synced tables arrive pre-shaped from the SDP pipeline.
+# MAGIC We just need indexes for fast query performance.
 
 # COMMAND ----------
-# KPI materialized view: pre-extracted columns from otel_logs
-KPI_MAT_VIEW_DDL = """
-DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.kpi_logs_mat CASCADE;
+CC_LOGS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_svc_evt_ts ON zerobus_sdp.cc_logs_synced (service_name, event_name, event_ts);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_session ON zerobus_sdp.cc_logs_synced (session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_session_prompt ON zerobus_sdp.cc_logs_synced (session_id, prompt_id);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_session_prompt_seq ON zerobus_sdp.cc_logs_synced (session_id, prompt_id, event_seq);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_event_ts ON zerobus_sdp.cc_logs_synced (event_ts);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_tool ON zerobus_sdp.cc_logs_synced (tool_name) WHERE event_name = 'tool_result';",
+    "CREATE INDEX IF NOT EXISTS idx_cc_logs_user ON zerobus_sdp.cc_logs_synced (user_id);",
+]
 
-CREATE MATERIALIZED VIEW zerobus_sdp.kpi_logs_mat AS
-SELECT
-    row_id,
-    (attributes::jsonb->>'session.id') as session_id,
-    (attributes::jsonb->>'prompt.id') as prompt_id,
-    (attributes::jsonb->>'event.name') as event_name,
-    (attributes::jsonb->>'event.timestamp')::timestamp as event_ts,
-    (attributes::jsonb->>'event.sequence')::int as event_seq,
-    (attributes::jsonb->>'model') as model,
-    (attributes::jsonb->>'cost_usd')::double precision as cost_usd,
-    (attributes::jsonb->>'input_tokens')::bigint as input_tokens,
-    (attributes::jsonb->>'output_tokens')::bigint as output_tokens,
-    (attributes::jsonb->>'cache_read_tokens')::bigint as cache_read_tokens,
-    (attributes::jsonb->>'duration_ms')::double precision as duration_ms,
-    (attributes::jsonb->>'tool_name') as tool_name,
-    (attributes::jsonb->>'success') as success,
-    (attributes::jsonb->>'prompt') as prompt_text,
-    (resource_attributes::jsonb->>'service.name') as service_name
-FROM zerobus_sdp.otel_logs_pg_synced
-WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
-"""
-
-KPI_INDEXES_DDL = [
-    "CREATE INDEX IF NOT EXISTS idx_mat_service_event_ts ON zerobus_sdp.kpi_logs_mat (service_name, event_name, event_ts);",
-    "CREATE INDEX IF NOT EXISTS idx_mat_session_prompt ON zerobus_sdp.kpi_logs_mat (session_id, prompt_id);",
-    "CREATE INDEX IF NOT EXISTS idx_mat_event_ts ON zerobus_sdp.kpi_logs_mat (event_ts);",
-    "CREATE INDEX IF NOT EXISTS idx_mat_session_prompt_seq ON zerobus_sdp.kpi_logs_mat (session_id, prompt_id, event_seq);",
+CC_SPANS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_cc_spans_kind_name ON zerobus_sdp.cc_spans_synced (kind, name);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_spans_service ON zerobus_sdp.cc_spans_synced (service_name);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_spans_start_ts ON zerobus_sdp.cc_spans_synced (start_ts);",
+    "CREATE INDEX IF NOT EXISTS idx_cc_spans_trace_span ON zerobus_sdp.cc_spans_synced (trace_id, span_id);",
 ]
 
 try:
     conninfo = f"host={instance.read_write_dns} port=5432 dbname={database_name} user={email} password={token} sslmode=require"
     with psycopg.connect(conninfo, autocommit=True) as conn:
-        conn.execute(KPI_MAT_VIEW_DDL)
-        print("  ✓ Materialized view zerobus_sdp.kpi_logs_mat created")
-        for idx_ddl in KPI_INDEXES_DDL:
+        for idx_ddl in CC_LOGS_INDEXES:
             conn.execute(idx_ddl)
-        print(f"  ✓ {len(KPI_INDEXES_DDL)} indexes created on kpi_logs_mat")
+        print(f"  ✓ {len(CC_LOGS_INDEXES)} indexes created on cc_logs_synced")
+        for idx_ddl in CC_SPANS_INDEXES:
+            conn.execute(idx_ddl)
+        print(f"  ✓ {len(CC_SPANS_INDEXES)} indexes created on cc_spans_synced")
 except Exception as e:
-    print(f"  ✗ KPI materialized view setup failed: {e}")
+    print(f"  ✗ Index creation failed: {e}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 5c: Create otel_logs_mat — Wide Materialized View for QueryService
-# MAGIC Pre-extracts all JSONB attributes used by QueryService into typed columns.
+# MAGIC ## Step 5c: Clean Up Legacy PG Materialized Views
+# MAGIC Remove old mat views that are now replaced by pre-shaped synced tables.
 
 # COMMAND ----------
-OTEL_LOGS_MAT_DDL = """
-DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.otel_logs_mat CASCADE;
-
-CREATE MATERIALIZED VIEW zerobus_sdp.otel_logs_mat AS
-SELECT
-    row_id,
-    (attributes::jsonb->>'session.id') as session_id,
-    (attributes::jsonb->>'user.id') as user_id,
-    (attributes::jsonb->>'prompt.id') as prompt_id,
-    (attributes::jsonb->>'event.name') as event_name,
-    (attributes::jsonb->>'event.timestamp')::timestamp as event_ts,
-    (attributes::jsonb->>'event.sequence')::int as event_seq,
-    (resource_attributes::jsonb->>'service.name') as service_name,
-    (attributes::jsonb->>'model') as model,
-    (attributes::jsonb->>'cost_usd')::double precision as cost_usd,
-    (attributes::jsonb->>'input_tokens')::bigint as input_tokens,
-    (attributes::jsonb->>'output_tokens')::bigint as output_tokens,
-    (attributes::jsonb->>'cache_read_tokens')::bigint as cache_read_tokens,
-    (attributes::jsonb->>'cache_creation_tokens')::bigint as cache_creation_tokens,
-    (attributes::jsonb->>'duration_ms')::double precision as duration_ms,
-    (attributes::jsonb->>'tool_name') as tool_name,
-    (attributes::jsonb->>'success') as success,
-    (attributes::jsonb->>'prompt') as prompt_text,
-    (attributes::jsonb->>'prompt_length') as prompt_length,
-    (attributes::jsonb->>'error') as error,
-    (attributes::jsonb->>'status_code') as status_code,
-    (attributes::jsonb->>'decision') as decision,
-    (attributes::jsonb->>'source') as source,
-    (attributes::jsonb->>'speed') as speed,
-    (attributes::jsonb->>'tool_result_size_bytes')::bigint as tool_result_size_bytes,
-    (attributes::jsonb->>'tool_parameters') as tool_parameters
-FROM zerobus_sdp.otel_logs_pg_synced
-WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
-"""
-
-OTEL_LOGS_MAT_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_svc_evt_ts ON zerobus_sdp.otel_logs_mat (service_name, event_name, event_ts);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_session ON zerobus_sdp.otel_logs_mat (session_id);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_session_prompt ON zerobus_sdp.otel_logs_mat (session_id, prompt_id);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_session_prompt_seq ON zerobus_sdp.otel_logs_mat (session_id, prompt_id, event_seq);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_event_ts ON zerobus_sdp.otel_logs_mat (event_ts);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_tool ON zerobus_sdp.otel_logs_mat (tool_name) WHERE event_name = 'tool_result';",
-    "CREATE INDEX IF NOT EXISTS idx_otel_logs_mat_user ON zerobus_sdp.otel_logs_mat (user_id);",
-]
-
-try:
-    conninfo = f"host={instance.read_write_dns} port=5432 dbname={database_name} user={email} password={token} sslmode=require"
-    with psycopg.connect(conninfo, autocommit=True) as conn:
-        conn.execute(OTEL_LOGS_MAT_DDL)
-        print("  ✓ Materialized view zerobus_sdp.otel_logs_mat created")
-        for idx_ddl in OTEL_LOGS_MAT_INDEXES:
-            conn.execute(idx_ddl)
-        print(f"  ✓ {len(OTEL_LOGS_MAT_INDEXES)} indexes created on otel_logs_mat")
-except Exception as e:
-    print(f"  ✗ otel_logs_mat setup failed: {e}")
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 5d: Create otel_spans_mat — Materialized View for McpQueryService
-# MAGIC Pre-extracts span attributes and computes derived fields (duration, domain regex).
-
-# COMMAND ----------
-OTEL_SPANS_MAT_DDL = """
-DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.otel_spans_mat CASCADE;
-
-CREATE MATERIALIZED VIEW zerobus_sdp.otel_spans_mat AS
-SELECT
-    row_id,
-    name,
-    kind,
-    trace_id,
-    span_id,
-    parent_span_id,
-    (resource_attributes::jsonb->>'service.name') as service_name,
-    to_timestamp(start_time_unix_nano::bigint / 1000000000.0) as start_ts,
-    ROUND(((end_time_unix_nano::bigint - start_time_unix_nano::bigint) / 1e6)::numeric, 1) as duration_ms,
-    (status::jsonb->>'code') as status_code,
-    (status::jsonb->>'message') as status_message,
-    (attributes::jsonb->>'http.method') as http_method,
-    (attributes::jsonb->>'http.url') as http_url,
-    (attributes::jsonb->>'http.status_code')::int as http_status_code,
-    (regexp_match(attributes::jsonb->>'http.url', '^(https?://[^/]+)'))[1] as http_domain
-FROM zerobus_sdp.otel_spans_pg_synced
-WHERE resource_attributes::jsonb->>'service.name' = 'claude-code';
-"""
-
-OTEL_SPANS_MAT_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_otel_spans_mat_kind_name ON zerobus_sdp.otel_spans_mat (kind, name);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_spans_mat_service ON zerobus_sdp.otel_spans_mat (service_name);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_spans_mat_start_ts ON zerobus_sdp.otel_spans_mat (start_ts);",
-    "CREATE INDEX IF NOT EXISTS idx_otel_spans_mat_trace_span ON zerobus_sdp.otel_spans_mat (trace_id, span_id);",
-]
-
-try:
-    conninfo = f"host={instance.read_write_dns} port=5432 dbname={database_name} user={email} password={token} sslmode=require"
-    with psycopg.connect(conninfo, autocommit=True) as conn:
-        conn.execute(OTEL_SPANS_MAT_DDL)
-        print("  ✓ Materialized view zerobus_sdp.otel_spans_mat created")
-        for idx_ddl in OTEL_SPANS_MAT_INDEXES:
-            conn.execute(idx_ddl)
-        print(f"  ✓ {len(OTEL_SPANS_MAT_INDEXES)} indexes created on otel_spans_mat")
-except Exception as e:
-    print(f"  ✗ otel_spans_mat setup failed: {e}")
+LEGACY_MAT_VIEWS = ["kpi_logs_mat", "otel_logs_mat", "otel_spans_mat"]
+for mv in LEGACY_MAT_VIEWS:
+    try:
+        run_pg(f"DROP MATERIALIZED VIEW IF EXISTS zerobus_sdp.{mv} CASCADE;", dbname=database_name)
+        print(f"  ✓ Dropped legacy mat view: {mv}")
+    except Exception as e:
+        print(f"  - {mv}: {e}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -512,14 +403,6 @@ if sp_role:
     except Exception as e:
         print(f"  ✗ Grant failed: {e}")
 
-    # Transfer mat view ownership to SP so it can REFRESH them
-    mat_views = ["kpi_logs_mat", "otel_logs_mat", "otel_spans_mat"]
-    for mv in mat_views:
-        try:
-            run_pg(f'ALTER MATERIALIZED VIEW zerobus_sdp.{mv} OWNER TO "{sp_role}";', dbname=database_name)
-            print(f"  ✓ Transferred ownership of {mv} to {sp_role}")
-        except Exception as e:
-            print(f"  ✗ Ownership transfer for {mv} failed: {e}")
 
 # COMMAND ----------
 # MAGIC %md
