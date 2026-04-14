@@ -514,3 +514,52 @@ export interface ActivityClassification {
   total_cost: string;
   total_tokens: string;
 }
+
+// ── AI Gateway Dashboard Types ──
+
+export interface GatewayOverviewData {
+  kpis: { total_requests: string; total_tokens: string; total_unique_users: string };
+  daily: { date: string; requests: string; tokens: string; unique_users: string }[];
+  top_endpoints: { endpoint_name: string; total_tokens: string; requests: string }[];
+  top_models: { model: string; total_tokens: string; requests: string }[];
+  top_users: { requester: string; requests: string; total_tokens: string }[];
+  latency_by_endpoint: { date: string; endpoint_name: string; avg_latency_ms: string; avg_ttfb_ms: string }[];
+}
+
+export interface GatewayPerformanceData {
+  kpis: { median_latency_ms: string; median_ttfb_ms: string; error_count: string };
+  latency_by_endpoint: { date: string; endpoint_name: string; median_latency_ms: string }[];
+  status_codes: { status_code: string; count: string }[];
+  tpm_by_endpoint: { date: string; endpoint_name: string; tpm: string }[];
+  ttfb_by_endpoint: { date: string; endpoint_name: string; median_ttfb_ms: string }[];
+  ttft_loss: { endpoint_name: string; avg_ttfb_ms: string; avg_generation_ms: string }[];
+  errors_by_endpoint: { endpoint_name: string; error_count: string }[];
+}
+
+export interface GatewayUsageData {
+  kpis: { total_endpoints: string; active_users: string };
+  tokens_by_endpoint: { date: string; endpoint_name: string; tokens: string }[];
+  tokens_by_model: { date: string; model: string; tokens: string }[];
+  tokens_by_user: { date: string; requester: string; tokens: string }[];
+  input_output: { date: string; input_tokens: string; output_tokens: string }[];
+  cache_hit_by_endpoint: { endpoint_name: string; cache_read_tokens: string; total_input_tokens: string; cache_hit_pct: string }[];
+}
+
+export interface GatewayCodingAgentsData {
+  kpis: { total_requests: string; total_tokens: string; unique_users: string };
+  summary: { coding_agent: string; requests: string; total_tokens: string; unique_users: string; avg_latency_ms: string }[];
+  daily: { date: string; coding_agent: string; requests: string; tokens: string; avg_latency_ms: string }[];
+  by_endpoint: { endpoint_name: string; requests: string }[];
+  by_model: { coding_agent: string; model: string; tokens: string }[];
+  user_analytics: { requester: string; coding_agent: string; total_tokens: string; requests: string; avg_latency_ms: string }[];
+}
+
+export interface GatewayTokenConsumptionData {
+  kpis: { total_tokens: string; total_requests: string; avg_tokens_per_request: string };
+  daily: { date: string; tokens: string }[];
+  by_destination_type: { destination_type: string; tokens: string }[];
+  weekly_by_endpoint: { week: string; endpoint_name: string; tokens: string }[];
+  top_endpoints: { endpoint_name: string; tokens: string }[];
+  top_models: { model: string; tokens: string }[];
+  top_users: { requester: string; tokens: string }[];
+}

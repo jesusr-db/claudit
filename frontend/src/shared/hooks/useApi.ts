@@ -12,9 +12,6 @@ import type {
   BillingDaily,
   QueryStats,
   QueryDaily,
-  AiGatewayModelStat,
-  AiGatewayDaily,
-  AiGatewayError,
   TurnaroundSummary,
   TurnaroundPrompt,
   McpServerOverview,
@@ -46,6 +43,11 @@ import type {
   KpiRightsizingDetail,
   IntrospectionResult,
   ActivityClassification,
+  GatewayOverviewData,
+  GatewayPerformanceData,
+  GatewayUsageData,
+  GatewayCodingAgentsData,
+  GatewayTokenConsumptionData,
 } from "@/types/api";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -174,24 +176,55 @@ export function useQueryDaily(days = 7) {
   });
 }
 
-export function useAiGatewayModels(days = 7) {
-  return useQuery<{ models: AiGatewayModelStat[]; days: number }>({
-    queryKey: ["platform", "ai-gateway", "models", { days }],
-    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/models?days=${days}`),
+// ── AI Gateway Dashboard Hooks ──
+
+function gatewayParams(days: number, endpoint: string | null, agent?: string | null): string {
+  const params = new URLSearchParams();
+  params.set("days", String(days));
+  if (endpoint) params.set("endpoint", endpoint);
+  if (agent) params.set("agent", agent);
+  return params.toString();
+}
+
+export function useAiGatewayEndpoints(days = 7) {
+  return useQuery<{ endpoints: string[] }>({
+    queryKey: ["platform", "ai-gateway", "endpoints", { days }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/endpoints?days=${days}`),
   });
 }
 
-export function useAiGatewayDaily(days = 7) {
-  return useQuery<{ daily: AiGatewayDaily[]; days: number }>({
-    queryKey: ["platform", "ai-gateway", "daily", { days }],
-    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/daily?days=${days}`),
+export function useAiGatewayOverview(days = 7, endpoint: string | null = null) {
+  return useQuery<GatewayOverviewData>({
+    queryKey: ["platform", "ai-gateway", "overview", { days, endpoint }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/overview?${gatewayParams(days, endpoint)}`),
   });
 }
 
-export function useAiGatewayErrors(days = 7) {
-  return useQuery<{ errors: AiGatewayError[]; days: number }>({
-    queryKey: ["platform", "ai-gateway", "errors", { days }],
-    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/errors?days=${days}`),
+export function useAiGatewayPerformance(days = 7, endpoint: string | null = null) {
+  return useQuery<GatewayPerformanceData>({
+    queryKey: ["platform", "ai-gateway", "performance", { days, endpoint }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/performance?${gatewayParams(days, endpoint)}`),
+  });
+}
+
+export function useAiGatewayUsage(days = 7, endpoint: string | null = null) {
+  return useQuery<GatewayUsageData>({
+    queryKey: ["platform", "ai-gateway", "usage", { days, endpoint }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/usage?${gatewayParams(days, endpoint)}`),
+  });
+}
+
+export function useAiGatewayCodingAgents(days = 7, endpoint: string | null = null, agent: string | null = null) {
+  return useQuery<GatewayCodingAgentsData>({
+    queryKey: ["platform", "ai-gateway", "coding-agents", { days, endpoint, agent }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/coding-agents?${gatewayParams(days, endpoint, agent)}`),
+  });
+}
+
+export function useAiGatewayTokenConsumption(days = 7, endpoint: string | null = null) {
+  return useQuery<GatewayTokenConsumptionData>({
+    queryKey: ["platform", "ai-gateway", "token-consumption", { days, endpoint }],
+    queryFn: () => fetchJson(`/api/v1/platform/ai-gateway/token-consumption?${gatewayParams(days, endpoint)}`),
   });
 }
 
