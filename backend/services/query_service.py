@@ -25,6 +25,38 @@ class QueryService:
         'build_query_history_stats_query', 'build_query_history_daily_query',
         'build_ai_gateway_model_stats_query', 'build_ai_gateway_daily_query',
         'build_ai_gateway_errors_query',
+        'build_ai_gateway_endpoints_query',
+        'build_ai_gateway_overview_kpis_query',
+        'build_ai_gateway_overview_daily_query',
+        'build_ai_gateway_overview_top_endpoints_query',
+        'build_ai_gateway_overview_top_models_query',
+        'build_ai_gateway_overview_top_users_query',
+        'build_ai_gateway_overview_latency_by_endpoint_query',
+        'build_ai_gateway_performance_kpis_query',
+        'build_ai_gateway_performance_latency_by_endpoint_query',
+        'build_ai_gateway_performance_status_codes_query',
+        'build_ai_gateway_performance_tpm_query',
+        'build_ai_gateway_performance_ttfb_by_endpoint_query',
+        'build_ai_gateway_performance_ttft_loss_query',
+        'build_ai_gateway_performance_errors_by_endpoint_query',
+        'build_ai_gateway_usage_kpis_query',
+        'build_ai_gateway_usage_tokens_by_endpoint_query',
+        'build_ai_gateway_usage_tokens_by_model_query',
+        'build_ai_gateway_usage_tokens_by_user_query',
+        'build_ai_gateway_usage_input_output_query',
+        'build_ai_gateway_usage_cache_hit_query',
+        'build_ai_gateway_coding_agents_summary_query',
+        'build_ai_gateway_coding_agents_daily_query',
+        'build_ai_gateway_coding_agents_by_endpoint_query',
+        'build_ai_gateway_coding_agents_by_model_query',
+        'build_ai_gateway_coding_agents_user_analytics_query',
+        'build_ai_gateway_token_consumption_kpis_query',
+        'build_ai_gateway_token_consumption_daily_query',
+        'build_ai_gateway_token_consumption_by_dest_type_query',
+        'build_ai_gateway_token_consumption_weekly_query',
+        'build_ai_gateway_token_consumption_top_endpoints_query',
+        'build_ai_gateway_token_consumption_top_models_query',
+        'build_ai_gateway_token_consumption_top_users_query',
     }
 
     def __init__(self):
@@ -442,6 +474,27 @@ class QueryService:
             return f"event_time >= CURRENT_TIMESTAMP() - INTERVAL {minutes} MINUTES"
         return f"event_time >= current_date() - {int(days)}"
 
+    @staticmethod
+    def _ai_gw_agent_classification() -> str:
+        return """
+        CASE
+            WHEN user_agent LIKE 'claude-cli%' AND user_agent LIKE '%claude-vscode%' THEN 'Claude Code (VS Code)'
+            WHEN user_agent LIKE 'claude-cli%' AND user_agent LIKE '%sdk-py%' THEN 'Claude Code (SDK)'
+            WHEN user_agent LIKE 'claude-cli%' THEN 'Claude Code (CLI)'
+            WHEN user_agent LIKE 'OpenAI/Python%' OR user_agent LIKE 'AsyncOpenAI/Python%' THEN 'OpenAI SDK'
+            WHEN user_agent LIKE 'Anthropic/Python%' OR user_agent LIKE 'AsyncAnthropic/Python%' THEN 'Anthropic SDK'
+            WHEN user_agent LIKE 'python-requests%' THEN 'Python Requests'
+            WHEN user_agent LIKE 'Mozilla%' THEN 'Browser'
+            ELSE COALESCE(SUBSTRING(user_agent, 1, 30), 'Unknown')
+        END
+        """.strip()
+
+    def _ai_gw_endpoint_filter(self, endpoint: str | None) -> str:
+        if endpoint:
+            safe = endpoint.replace("'", "''")
+            return f"AND endpoint_name = '{safe}'"
+        return ""
+
     def build_ai_gateway_model_stats_query(self, days: float = 7) -> str:
         """Per-model performance from system.ai_gateway.usage."""
         time_filter = self._ai_gw_time_filter(days)
@@ -541,6 +594,628 @@ class QueryService:
               AND status_code != 200
             GROUP BY destination_model, endpoint_name, status_code
             ORDER BY error_count DESC
+        """.strip()
+
+    # ── AI Gateway Dashboard Queries ──
+
+    def build_ai_gateway_endpoints_query(self, days: float = 7) -> str:
+        """List distinct AI Gateway endpoints."""
+        time_filter = self._ai_gw_time_filter(days)
+        return f"""
+            SELECT DISTINCT endpoint_name
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+            ORDER BY endpoint_name
+        """.strip()
+
+    # -- Overview Tab --
+
+    def build_ai_gateway_overview_kpis_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                COUNT(*) as total_requests,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(DISTINCT requester) as total_unique_users
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+        """.strip()
+
+    def build_ai_gateway_overview_daily_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                DATE(event_time) as date,
+                COUNT(*) as requests,
+                COALESCE(SUM(total_tokens), 0) as tokens,
+                COUNT(DISTINCT requester) as unique_users
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(event_time)
+            ORDER BY date ASC
+        """.strip()
+
+    def build_ai_gateway_overview_top_endpoints_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                endpoint_name,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(*) as requests
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY endpoint_name
+            ORDER BY total_tokens DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_overview_top_models_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                destination_model as model,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(*) as requests
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY destination_model
+            ORDER BY total_tokens DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_overview_top_users_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                requester,
+                COUNT(*) as requests,
+                COALESCE(SUM(total_tokens), 0) as total_tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY requester
+            ORDER BY requests DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_overview_latency_by_endpoint_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 5
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.endpoint_name,
+                ROUND(AVG(u.latency_ms), 0) as avg_latency_ms,
+                ROUND(AVG(u.time_to_first_byte_ms), 0) as avg_ttfb_ms
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.endpoint_name
+            ORDER BY date ASC, u.endpoint_name
+        """.strip()
+
+    # -- Performance Tab --
+
+    def build_ai_gateway_performance_kpis_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                ROUND(PERCENTILE(CAST(latency_ms AS DOUBLE), 0.5), 0) as median_latency_ms,
+                ROUND(PERCENTILE(CAST(time_to_first_byte_ms AS DOUBLE), 0.5), 0) as median_ttfb_ms,
+                SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as error_count
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+        """.strip()
+
+    def build_ai_gateway_performance_latency_by_endpoint_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 5
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.endpoint_name,
+                ROUND(PERCENTILE(CAST(u.latency_ms AS DOUBLE), 0.5), 0) as median_latency_ms
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.endpoint_name
+            ORDER BY date ASC, u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_performance_status_codes_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                status_code,
+                COUNT(*) as count
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY status_code
+            ORDER BY count DESC
+        """.strip()
+
+    def build_ai_gateway_performance_tpm_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 5
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.endpoint_name,
+                ROUND(SUM(u.total_tokens) / GREATEST(COUNT(DISTINCT HOUR(u.event_time)), 1) / 60.0, 0) as tpm
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.endpoint_name
+            ORDER BY date ASC, u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_performance_ttfb_by_endpoint_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 5
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.endpoint_name,
+                ROUND(PERCENTILE(CAST(u.time_to_first_byte_ms AS DOUBLE), 0.5), 0) as median_ttfb_ms
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.endpoint_name
+            ORDER BY date ASC, u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_performance_ttft_loss_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COUNT(*) DESC
+                LIMIT 5
+            )
+            SELECT
+                u.endpoint_name,
+                ROUND(AVG(u.time_to_first_byte_ms), 0) as avg_ttfb_ms,
+                ROUND(AVG(u.latency_ms - u.time_to_first_byte_ms), 0) as avg_generation_ms
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY u.endpoint_name
+            ORDER BY u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_performance_errors_by_endpoint_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                endpoint_name,
+                COUNT(*) as error_count
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              AND status_code != 200
+              {ep_filter}
+            GROUP BY endpoint_name
+            ORDER BY error_count DESC
+            LIMIT 10
+        """.strip()
+
+    # -- Usage Tab --
+
+    def build_ai_gateway_usage_kpis_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                COUNT(DISTINCT endpoint_name) as total_endpoints,
+                COUNT(DISTINCT requester) as active_users
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+        """.strip()
+
+    def build_ai_gateway_usage_tokens_by_endpoint_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COALESCE(SUM(total_tokens), 0) DESC
+                LIMIT 7
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.endpoint_name,
+                COALESCE(SUM(u.total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.endpoint_name
+            ORDER BY date ASC, u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_usage_tokens_by_model_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_models AS (
+                SELECT destination_model
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY destination_model
+                ORDER BY COALESCE(SUM(total_tokens), 0) DESC
+                LIMIT 7
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.destination_model as model,
+                COALESCE(SUM(u.total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage u
+            JOIN top_models t ON u.destination_model = t.destination_model
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.destination_model
+            ORDER BY date ASC, model
+        """.strip()
+
+    def build_ai_gateway_usage_tokens_by_user_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_users AS (
+                SELECT requester
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY requester
+                ORDER BY COALESCE(SUM(total_tokens), 0) DESC
+                LIMIT 5
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                u.requester,
+                COALESCE(SUM(u.total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage u
+            JOIN top_users t ON u.requester = t.requester
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(u.event_time), u.requester
+            ORDER BY date ASC, u.requester
+        """.strip()
+
+    def build_ai_gateway_usage_input_output_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                DATE(event_time) as date,
+                COALESCE(SUM(input_tokens), 0) as input_tokens,
+                COALESCE(SUM(output_tokens), 0) as output_tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(event_time)
+            ORDER BY date ASC
+        """.strip()
+
+    def build_ai_gateway_usage_cache_hit_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                endpoint_name,
+                COALESCE(SUM(token_details.cache_read_input_tokens), 0) as cache_read_tokens,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                ROUND(COALESCE(SUM(token_details.cache_read_input_tokens), 0) * 100.0 / SUM(input_tokens), 1) as cache_hit_pct
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY endpoint_name
+            HAVING SUM(input_tokens) > 0
+            ORDER BY cache_hit_pct DESC
+            LIMIT 10
+        """.strip()
+
+    # -- Coding Agents Tab --
+
+    def build_ai_gateway_coding_agents_summary_query(self, days: float = 7, endpoint: str | None = None, agent: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        agent_cls = self._ai_gw_agent_classification()
+        agent_filter = ""
+        if agent:
+            safe_agent = agent.replace("'", "''")
+            agent_filter = f"AND {agent_cls} = '{safe_agent}'"
+        return f"""
+            SELECT
+                {agent_cls} as coding_agent,
+                COUNT(*) as requests,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(DISTINCT requester) as unique_users,
+                ROUND(AVG(latency_ms), 0) as avg_latency_ms
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+              {agent_filter}
+            GROUP BY coding_agent
+            ORDER BY requests DESC
+        """.strip()
+
+    def build_ai_gateway_coding_agents_daily_query(self, days: float = 7, endpoint: str | None = None, agent: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        agent_cls = self._ai_gw_agent_classification()
+        agent_filter = ""
+        if agent:
+            safe_agent = agent.replace("'", "''")
+            agent_filter = f"AND {agent_cls} = '{safe_agent}'"
+        return f"""
+            WITH top_agents AS (
+                SELECT {agent_cls} as coding_agent
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                  {agent_filter}
+                GROUP BY coding_agent
+                ORDER BY COUNT(*) DESC
+                LIMIT 7
+            )
+            SELECT
+                DATE(u.event_time) as date,
+                {agent_cls} as coding_agent,
+                COUNT(*) as requests,
+                COALESCE(SUM(u.total_tokens), 0) as tokens,
+                ROUND(AVG(u.latency_ms), 0) as avg_latency_ms
+            FROM system.ai_gateway.usage u
+            WHERE {time_filter}
+              {ep_filter}
+              {agent_filter}
+              AND {agent_cls} IN (SELECT coding_agent FROM top_agents)
+            GROUP BY DATE(u.event_time), coding_agent
+            ORDER BY date ASC, coding_agent
+        """.strip()
+
+    def build_ai_gateway_coding_agents_by_endpoint_query(self, days: float = 7, endpoint: str | None = None, agent: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        agent_cls = self._ai_gw_agent_classification()
+        agent_filter = ""
+        if agent:
+            safe_agent = agent.replace("'", "''")
+            agent_filter = f"AND {agent_cls} = '{safe_agent}'"
+        return f"""
+            SELECT
+                endpoint_name,
+                COUNT(*) as requests
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+              {agent_filter}
+            GROUP BY endpoint_name
+            ORDER BY requests DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_coding_agents_by_model_query(self, days: float = 7, endpoint: str | None = None, agent: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        agent_cls = self._ai_gw_agent_classification()
+        agent_filter = ""
+        if agent:
+            safe_agent = agent.replace("'", "''")
+            agent_filter = f"AND {agent_cls} = '{safe_agent}'"
+        return f"""
+            SELECT
+                {agent_cls} as coding_agent,
+                destination_model as model,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+              {agent_filter}
+            GROUP BY coding_agent, destination_model
+            ORDER BY tokens DESC
+        """.strip()
+
+    def build_ai_gateway_coding_agents_user_analytics_query(self, days: float = 7, endpoint: str | None = None, agent: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        agent_cls = self._ai_gw_agent_classification()
+        agent_filter = ""
+        if agent:
+            safe_agent = agent.replace("'", "''")
+            agent_filter = f"AND {agent_cls} = '{safe_agent}'"
+        return f"""
+            SELECT
+                requester,
+                {agent_cls} as coding_agent,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(*) as requests,
+                ROUND(AVG(latency_ms), 0) as avg_latency_ms
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+              {agent_filter}
+            GROUP BY requester, coding_agent
+            ORDER BY total_tokens DESC
+            LIMIT 25
+        """.strip()
+
+    # -- Token Consumption Tab --
+
+    def build_ai_gateway_token_consumption_kpis_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COUNT(*) as total_requests,
+                ROUND(COALESCE(SUM(total_tokens), 0) * 1.0 / GREATEST(COUNT(*), 1), 0) as avg_tokens_per_request
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+        """.strip()
+
+    def build_ai_gateway_token_consumption_daily_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                DATE(event_time) as date,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE(event_time)
+            ORDER BY date ASC
+        """.strip()
+
+    def build_ai_gateway_token_consumption_by_dest_type_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                destination_type,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY destination_type
+            ORDER BY tokens DESC
+        """.strip()
+
+    def build_ai_gateway_token_consumption_weekly_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            WITH top_eps AS (
+                SELECT endpoint_name
+                FROM system.ai_gateway.usage
+                WHERE {time_filter}
+                  {ep_filter}
+                GROUP BY endpoint_name
+                ORDER BY COALESCE(SUM(total_tokens), 0) DESC
+                LIMIT 7
+            )
+            SELECT
+                DATE_TRUNC('WEEK', u.event_time) as week,
+                u.endpoint_name,
+                COALESCE(SUM(u.total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage u
+            JOIN top_eps t ON u.endpoint_name = t.endpoint_name
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY DATE_TRUNC('WEEK', u.event_time), u.endpoint_name
+            ORDER BY week ASC, u.endpoint_name
+        """.strip()
+
+    def build_ai_gateway_token_consumption_top_endpoints_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                endpoint_name,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY endpoint_name
+            ORDER BY tokens DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_token_consumption_top_models_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                destination_model as model,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY destination_model
+            ORDER BY tokens DESC
+            LIMIT 10
+        """.strip()
+
+    def build_ai_gateway_token_consumption_top_users_query(self, days: float = 7, endpoint: str | None = None) -> str:
+        time_filter = self._ai_gw_time_filter(days)
+        ep_filter = self._ai_gw_endpoint_filter(endpoint)
+        return f"""
+            SELECT
+                requester,
+                COALESCE(SUM(total_tokens), 0) as tokens
+            FROM system.ai_gateway.usage
+            WHERE {time_filter}
+              {ep_filter}
+            GROUP BY requester
+            ORDER BY tokens DESC
+            LIMIT 10
         """.strip()
 
     # ── OTEL Queries ──
