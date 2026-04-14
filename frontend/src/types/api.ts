@@ -129,43 +129,6 @@ export interface QueryDaily {
   total_bytes_read: string;
 }
 
-export interface AiGatewayModelStat {
-  model: string;
-  endpoint_name: string;
-  api_type: string;
-  call_count: string;
-  success_count: string;
-  error_count: string;
-  avg_latency_ms: string;
-  p50_latency_ms: string;
-  p95_latency_ms: string;
-  avg_ttfb_ms: string;
-  total_input_tokens: string;
-  total_output_tokens: string;
-  total_tokens: string;
-  total_cache_read_tokens: string | null;
-  total_cache_creation_tokens: string | null;
-}
-
-export interface AiGatewayDaily {
-  request_date: string;
-  total_requests: string;
-  succeeded: string;
-  failed: string;
-  avg_latency_ms: string;
-  avg_ttfb_ms: string;
-  p95_latency_ms: string;
-  total_tokens: string;
-}
-
-export interface AiGatewayError {
-  model: string;
-  endpoint_name: string;
-  status_code: string;
-  error_count: string;
-  avg_latency_ms: string;
-}
-
 export interface ToolCall {
   timestamp: string;
   tool_name: string;
