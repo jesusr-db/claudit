@@ -45,6 +45,7 @@ import type {
   KpiSavingsRow,
   KpiRightsizingDetail,
   IntrospectionResult,
+  ActivityClassification,
 } from "@/types/api";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -451,5 +452,14 @@ export function useIntrospectionAnalyze() {
       }
       return res.json();
     },
+  });
+}
+
+// ── Activity Classification ──
+
+export function useActivityClassification(days = 30) {
+  return useQuery<{ activities: ActivityClassification[]; days: number }>({
+    queryKey: ["kpis", "activity", { days }],
+    queryFn: () => fetchJson(`/api/v1/kpis/activity?days=${days}`),
   });
 }

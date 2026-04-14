@@ -24,6 +24,7 @@ class KpiQueryService:
         'build_rightsizing_details', 'build_model_recommendation',
         'build_savings_calculator',
         'build_kpi_badges',
+        'build_activity_classification',
     }
 
     SQL_METHODS = {
@@ -831,4 +832,47 @@ class KpiQueryService:
             CROSS JOIN prev_cost pc
             CROSS JOIN tool_data td
             CROSS JOIN turnaround ta
+        """.strip()
+
+    # ── Activity Classification (CodeBurn-inspired) ──
+
+    def build_activity_classification(self, days: int = 30) -> str:
+        return f"""
+            WITH prompt_tools AS (
+                SELECT
+                    prompt_id,
+                    string_agg(DISTINCT tool_name, ',') AS tools,
+                    MAX(CASE WHEN event_name = 'user_prompt' THEN prompt_text END) AS prompt_text,
+                    SUM(CASE WHEN event_name = 'api_request' THEN cost_usd ELSE 0 END) AS cost,
+                    SUM(CASE WHEN event_name = 'api_request' THEN input_tokens + output_tokens ELSE 0 END) AS tokens,
+                    COUNT(CASE WHEN event_name = 'api_request' THEN 1 END) AS api_calls
+                FROM {self.mat}
+                WHERE {self.service_filter}
+                  AND prompt_id IS NOT NULL
+                  AND event_ts >= current_date - interval '{days} days'
+                GROUP BY prompt_id
+            )
+            SELECT
+                activity,
+                COUNT(*) AS prompt_count,
+                ROUND(SUM(cost)::numeric, 4) AS total_cost,
+                SUM(tokens) AS total_tokens
+            FROM (
+                SELECT *,
+                    CASE
+                        WHEN tools LIKE '%mcp_tool%' THEN 'Delegation'
+                        WHEN prompt_text ~* 'test|pytest|jest|spec|coverage' THEN 'Testing'
+                        WHEN prompt_text ~* 'git |commit|branch|merge|rebase|cherry.pick' THEN 'Git Ops'
+                        WHEN prompt_text ~* 'build|deploy|docker|npm run|yarn |make |webpack|vite' THEN 'Build/Deploy'
+                        WHEN prompt_text ~* 'debug|error|fix |bug|stacktrace|traceback|exception' THEN 'Debugging'
+                        WHEN prompt_text ~* 'plan|design|architect|approach|strategy' THEN 'Planning'
+                        WHEN prompt_text ~* 'find|search|explore|where is|how does' AND tools ~ 'Read|Glob|Grep' THEN 'Exploration'
+                        WHEN tools ~ 'Edit|Write' THEN 'Coding'
+                        WHEN tools IS NULL OR tools = '' THEN 'Conversation'
+                        ELSE 'General'
+                    END AS activity
+                FROM prompt_tools
+            ) classified
+            GROUP BY activity
+            ORDER BY total_cost DESC
         """.strip()

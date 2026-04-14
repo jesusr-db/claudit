@@ -183,3 +183,13 @@ async def get_kpi_badges(days: int = Query(30, ge=1, le=365)):
         "cache_hit_pct": 0, "cost_trend_direction": "flat",
         "tool_success_rate": 0, "avg_turnaround_sec": 0,
     }
+
+
+# ── Activity Classification ──
+
+
+@router.get("/activity")
+async def get_activity_classification(days: int = Query(30, ge=1, le=365)):
+    query = kpi_service.build_activity_classification(days=days)
+    rows = await cached_execute(f"activity_classification:{days}", query)
+    return {"activities": rows, "days": days}

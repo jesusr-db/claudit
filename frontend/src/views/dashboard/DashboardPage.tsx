@@ -1,4 +1,4 @@
-import { Box, Heading, VStack, HStack, Text, Icon, Spinner, SimpleGrid } from "@chakra-ui/react";
+import { Box, Heading, VStack, HStack, Text, Icon, Spinner, SimpleGrid, Tooltip } from "@chakra-ui/react";
 import { Link } from "react-router-dom";
 import { FiTrendingUp, FiTrendingDown, FiMinus, FiArrowRight } from "react-icons/fi";
 import { MetricTooltip, METRIC_METHODOLOGY } from "@/shared/components/MetricTooltip";
@@ -6,6 +6,9 @@ import { formatAxisLabel } from "@/shared/utils/dates";
 import {
   AreaChart,
   Area,
+  BarChart,
+  Bar,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -13,7 +16,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { SummaryCards } from "./components/SummaryCards";
-import { useKpiBadges, useKpiCostTrend } from "@/shared/hooks/useApi";
+import { useKpiBadges, useKpiCostTrend, useActivityClassification } from "@/shared/hooks/useApi";
 import { useTimeRange } from "@/shared/context/TimeRangeContext";
 
 function formatTokens(n: number): string {
@@ -114,6 +117,121 @@ function TokenUsageChart({ days }: { days: number }) {
   );
 }
 
+const ACTIVITY_DESCRIPTIONS: Record<string, string> = {
+  Coding: "Prompts where Edit or Write tools were used. The agent was actively modifying files.",
+  Debugging: "Prompt text mentions debug, error, fix, bug, stacktrace, or exception.",
+  Testing: "Prompt text mentions test, pytest, jest, spec, or coverage.",
+  "Git Ops": "Prompt text mentions git, commit, branch, merge, rebase, or cherry-pick.",
+  "Build/Deploy": "Prompt text mentions build, deploy, docker, npm run, yarn, make, webpack, or vite.",
+  Delegation: "MCP tool calls detected — the agent delegated work to an external service.",
+  Planning: "Prompt text mentions plan, design, architect, approach, or strategy.",
+  Exploration: "Prompt text mentions find, search, or explore AND Read/Glob/Grep tools were used.",
+  Conversation: "No tool calls in the prompt — pure text exchange between user and agent.",
+  General: "Activity that didn't match any other category. Includes Skill invocations and misc tool use.",
+};
+
+const ACTIVITY_COLORS: Record<string, string> = {
+  Coding: "#6366F1",
+  Debugging: "#EF4444",
+  Testing: "#10B981",
+  "Git Ops": "#F59E0B",
+  "Build/Deploy": "#8B5CF6",
+  Delegation: "#EC4899",
+  Planning: "#06B6D4",
+  Exploration: "#14B8A6",
+  Conversation: "#94A3B8",
+  General: "#78716C",
+};
+
+function ActivityBreakdownChart({ days }: { days: number }) {
+  const { data, isLoading } = useActivityClassification(days);
+
+  if (isLoading) return <Spinner color="brand.500" size="sm" />;
+
+  const activities = data?.activities || [];
+  if (activities.length === 0)
+    return (
+      <Text color="gray.400" fontSize="sm">
+        No activity data
+      </Text>
+    );
+
+  const chartData = activities.map((a) => ({
+    activity: a.activity,
+    cost: parseFloat(a.total_cost || "0"),
+    prompts: parseInt(a.prompt_count || "0", 10),
+    tokens: parseInt(a.total_tokens || "0", 10),
+  }));
+
+  const totalCost = chartData.reduce((sum, d) => sum + d.cost, 0);
+
+  return (
+    <VStack spacing={4} align="stretch">
+      <Box h={`${Math.max(chartData.length * 36, 180)}px`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData} layout="vertical" margin={{ left: 10, right: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" horizontal={false} />
+            <XAxis
+              type="number"
+              tick={{ fontSize: 11, fill: "#94A3B8" }}
+              tickLine={false}
+              axisLine={{ stroke: "#E2E8F0" }}
+              tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+            />
+            <YAxis
+              type="category"
+              dataKey="activity"
+              tick={{ fontSize: 12, fill: "#475569" }}
+              tickLine={false}
+              axisLine={false}
+              width={90}
+            />
+            <RTooltip
+              contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #E2E8F0" }}
+              formatter={(value: number, _name: string, entry: { payload?: { prompts: number; tokens: number } }) => [
+                `$${value.toFixed(4)}  (${entry.payload?.prompts ?? 0} prompts, ${formatTokens(entry.payload?.tokens ?? 0)} tokens)`,
+                "Cost",
+              ]}
+            />
+            <Bar dataKey="cost" radius={[0, 4, 4, 0]} barSize={20}>
+              {chartData.map((entry) => (
+                <Cell key={entry.activity} fill={ACTIVITY_COLORS[entry.activity] || "#94A3B8"} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </Box>
+      <HStack spacing={3} flexWrap="wrap" px={2}>
+        {chartData.map((a) => (
+          <Tooltip
+            key={a.activity}
+            label={ACTIVITY_DESCRIPTIONS[a.activity] || "Uncategorized activity."}
+            fontSize="xs"
+            bg="gray.800"
+            color="white"
+            px={3}
+            py={2}
+            borderRadius="md"
+            maxW="280px"
+            hasArrow
+            placement="top"
+          >
+            <HStack spacing={1.5} cursor="help">
+              <Box w={2} h={2} borderRadius="full" bg={ACTIVITY_COLORS[a.activity] || "#94A3B8"} />
+              <Text fontSize="xs" color="gray.500">
+                {a.activity}{" "}
+                <Text as="span" fontWeight="600" color="gray.700">
+                  {totalCost > 0 ? `${((a.cost / totalCost) * 100).toFixed(0)}%` : "0%"}
+                </Text>
+              </Text>
+            </HStack>
+          </Tooltip>
+        ))}
+      </HStack>
+    </VStack>
+  );
+}
+
 export default function DashboardPage() {
   const { days } = useTimeRange();
   const { data: badges, isLoading: badgesLoading } = useKpiBadges(days);
@@ -199,6 +317,25 @@ export default function DashboardPage() {
             <TokenUsageChart days={days} />
           </Box>
         </SimpleGrid>
+
+        {/* Activity Breakdown */}
+        <Box
+          bg="surface.card"
+          borderRadius="soft-lg"
+          boxShadow="soft"
+          border="1px solid"
+          borderColor="soft.border"
+          p={5}
+        >
+          <MetricTooltip
+            label="Activity Breakdown"
+            methodology="Each prompt is classified by its tool usage and keywords. Rules are applied in priority order: Delegation (MCP tools) > Testing > Git Ops > Build/Deploy > Debugging > Planning > Exploration > Coding > Conversation > General. Cost and tokens are summed per category."
+          >
+            <Text fontSize="sm" fontWeight="600" color="gray.700">Activity Breakdown</Text>
+          </MetricTooltip>
+          <Box mb={3} />
+          <ActivityBreakdownChart days={days} />
+        </Box>
 
       </VStack>
     </Box>

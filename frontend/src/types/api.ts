@@ -507,3 +507,10 @@ export interface IntrospectionResult {
   cards: InsightCard[];
   analysis_error: string | null;
 }
+
+export interface ActivityClassification {
+  activity: string;
+  prompt_count: string;
+  total_cost: string;
+  total_tokens: string;
+}
