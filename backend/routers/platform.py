@@ -141,8 +141,8 @@ async def get_ai_gateway_coding_agents(
     by_model = executor.execute(query_service.build_ai_gateway_coding_agents_by_model_query(**params))
     user_analytics = executor.execute(query_service.build_ai_gateway_coding_agents_user_analytics_query(**params))
 
-    total_requests = sum(r.get("requests", 0) for r in summary)
-    total_tokens = sum(r.get("total_tokens", 0) for r in summary)
+    total_requests = sum(int(r.get("requests", 0)) for r in summary)
+    total_tokens = sum(int(r.get("total_tokens", 0)) for r in summary)
     unique_users = len({r.get("requester") for r in user_analytics if r.get("requester")})
 
     return {
