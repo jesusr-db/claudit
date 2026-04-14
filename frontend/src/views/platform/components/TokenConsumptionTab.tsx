@@ -82,10 +82,10 @@ export default function TokenConsumptionTab({ days, endpoint }: { days: number; 
   if (isLoading) return <Center py={20}><Spinner color="cyan.400" /></Center>;
   if (!data) return <Center py={20}><Text color={DARK.label}>No data for selected time range</Text></Center>;
 
-  const { kpis, daily, by_destination_type, weekly_by_endpoint, top_endpoints, top_models, top_users } = data;
+  const { kpis, daily = [], by_destination_type = [], weekly_by_endpoint = [], top_endpoints = [], top_models = [], top_users = [] } = data;
 
   const dailyParsed = daily.map((d) => ({ date: d.date, tokens: Number(d.tokens) }));
-  const destData = by_destination_type.map((d) => ({ type: d.destination_type, tokens: Number(d.tokens) }));
+  const destData = by_destination_type.map((d) => ({ type: d.destination_type ?? "Unknown", tokens: Number(d.tokens) }));
   const weeklyPivot = pivotByDay(weekly_by_endpoint, "week", "endpoint_name", "tokens");
 
   return (

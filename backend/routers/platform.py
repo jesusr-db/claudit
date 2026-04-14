@@ -178,7 +178,7 @@ async def get_ai_gateway_token_consumption(
     return {
         "kpis": kpis[0] if kpis else {},
         "daily": daily,
-        "by_dest_type": by_dest_type,
+        "by_destination_type": by_dest_type,
         "weekly_by_endpoint": weekly_by_endpoint,
         "top_endpoints": top_endpoints,
         "top_models": top_models,
