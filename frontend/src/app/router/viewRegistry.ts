@@ -73,7 +73,7 @@ export const viewRegistry: ViewEntry[] = [
     id: "mcp-servers",
     path: "/mcp-servers",
     component: McpServersPage,
-    label: "MCP Servers",
+    label: "Tools",
     nav: true,
   },
   {
