@@ -114,7 +114,7 @@ export default function EfficiencyKpiCards({ days }: Props) {
       <StatCard
         label="Rework Ratio"
         value={reworkPct}
-        sub={`${rework?.total_rework_writes ?? 0} re-writes of ${rework?.total_writes ?? 0} total across ${rework?.sessions_with_writes ?? 0} sessions`}
+        sub={`${parseInt(rework?.total_rework_writes ?? "0", 10).toLocaleString()} re-writes of ${parseInt(rework?.total_writes ?? "0", 10).toLocaleString()} total across ${parseInt(rework?.sessions_with_writes ?? "0", 10).toLocaleString()} sessions`}
         tooltip="Fraction of file edit/write operations that target a file already edited in the same session. High rework = AI produced output that needed correction."
       />
     </HStack>

@@ -19,12 +19,10 @@ export default function HarnessConvergenceChart({ days }: Props) {
   const { data, isLoading, error } = useEfficiencyHarnessConvergence(days);
 
   const trend = data?.trend ?? [];
-  const latest = trend.length > 0
-    ? parseFloat(trend[trend.length - 1].avg_convergence_score ?? "0")
-    : null;
-  const earliest = trend.length > 1
-    ? parseFloat(trend[0].avg_convergence_score ?? "0")
-    : null;
+  const lastScore = trend.length > 0 ? trend[trend.length - 1].avg_convergence_score : null;
+  const firstScore = trend.length > 1 ? trend[0].avg_convergence_score : null;
+  const latest = lastScore != null ? parseFloat(lastScore) : null;
+  const earliest = firstScore != null ? parseFloat(firstScore) : null;
   const direction =
     latest != null && earliest != null
       ? latest > earliest + 0.01
