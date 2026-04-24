@@ -19,6 +19,7 @@ import {
   FiServer,
   FiTrendingUp,
   FiSearch,
+  FiActivity,
 } from "react-icons/fi";
 
 const NAV_ICONS: Record<string, React.ElementType> = {
@@ -29,6 +30,7 @@ const NAV_ICONS: Record<string, React.ElementType> = {
   kpis: FiTrendingUp,
   platform: FiBarChart2,
   introspection: FiSearch,
+  efficiency: FiActivity,
 };
 
 export function Layout() {

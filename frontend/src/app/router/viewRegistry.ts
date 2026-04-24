@@ -27,6 +27,9 @@ const KpiHubPage = lazy(
 const IntrospectionPage = lazy(
   () => import("@/views/introspection/IntrospectionPage")
 );
+const EfficiencyPage = lazy(
+  () => import("@/views/efficiency/EfficiencyPage")
+);
 
 export interface ViewEntry {
   id: string;
@@ -95,6 +98,13 @@ export const viewRegistry: ViewEntry[] = [
     path: "/introspection",
     component: IntrospectionPage,
     label: "Introspection",
+    nav: true,
+  },
+  {
+    id: "efficiency",
+    path: "/efficiency",
+    component: EfficiencyPage,
+    label: "Efficiency",
     nav: true,
   },
 ];
