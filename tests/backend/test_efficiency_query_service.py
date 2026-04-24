@@ -1,6 +1,7 @@
 import pytest
 from backend.services.efficiency_query_service import EfficiencyQueryService
 
+
 @pytest.fixture
 def svc():
     return EfficiencyQueryService()
@@ -33,6 +34,7 @@ def test_feedback_latency_returns_percentile_query(svc):
     assert "PERCENTILE_CONT(0.95)" in sql
     assert "p50_ms" in sql
     assert "p95_ms" in sql
+    assert "30 days" in sql
 
 
 def test_harness_convergence_returns_dated_rows(svc):
@@ -40,7 +42,7 @@ def test_harness_convergence_returns_dated_rows(svc):
     assert isinstance(sql, str) and len(sql) > 0
     assert "avg_convergence_score" in sql
     # must have a date/day grouping column
-    assert any(col in sql for col in ("session_date", "date", "day"))
+    assert "session_date" in sql or "AS date" in sql
     assert "30 days" in sql
 
 
@@ -50,7 +52,9 @@ def test_rework_ratio_extracts_file_path(svc):
     assert "rework_ratio" in sql
     assert "file_path" in sql
     # edit/write events expected
-    assert "Edit" in sql or "Write" in sql
+    assert "Edit" in sql
+    assert "Write" in sql
+    assert "MultiEdit" in sql
 
 
 def test_all_queries_use_correct_table(svc):
