@@ -13,6 +13,9 @@ class EfficiencyQueryService:
       - Feedback Loop Latency: p50/p95 duration_ms by tool_name on tool_result events
       - Harness Convergence Score: daily trend of tool efficiency × completion rate
       - Rework Ratio: fraction of file writes that are re-writes to the same file
+
+    Note: No service_name filter needed — cc_logs_synced is pre-filtered to
+    service.name='claude-code' at the SDP pipeline level (cc_logs.sql).
     """
 
     @property
@@ -165,7 +168,7 @@ class EfficiencyQueryService:
             )
             SELECT
                 ROUND(AVG(rework_writes::float / NULLIF(total_writes, 0))::numeric, 3)    AS avg_rework_ratio,
-                ROUND(SUM(rework_writes)::float / NULLIF(SUM(total_writes), 0)::numeric, 3) AS overall_rework_ratio,
+                ROUND((SUM(rework_writes)::float / NULLIF(SUM(total_writes), 0))::numeric, 3) AS overall_rework_ratio,
                 SUM(rework_writes)::int                                                    AS total_rework_writes,
                 SUM(total_writes)::int                                                     AS total_writes,
                 COUNT(*)                                                                   AS sessions_with_writes
