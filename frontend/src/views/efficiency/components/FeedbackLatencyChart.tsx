@@ -53,6 +53,7 @@ export default function FeedbackLatencyChart({ days }: Props) {
               name: t.tool_name,
               p50: t.p50_ms != null ? parseFloat(t.p50_ms) : 0,
               p95: t.p95_ms != null ? parseFloat(t.p95_ms) : 0,
+              calls: parseInt(t.call_count, 10),
             }))}
             layout="vertical"
             margin={{ top: 0, right: 24, bottom: 0, left: 80 }}
@@ -62,6 +63,10 @@ export default function FeedbackLatencyChart({ days }: Props) {
             <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={80} />
             <Tooltip
               formatter={(value: number, name: string) => [`${value.toLocaleString()}ms`, name]}
+              labelFormatter={(label: string, payload) => {
+                const calls = payload?.[0]?.payload?.calls;
+                return calls != null ? `${label} (${calls.toLocaleString()} calls)` : label;
+              }}
             />
             <Legend />
             <Bar dataKey="p50" name="p50" fill="#4A90D9" radius={[0, 3, 3, 0]} />

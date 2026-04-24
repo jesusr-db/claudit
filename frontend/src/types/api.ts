@@ -547,7 +547,6 @@ export interface EfficiencyFeedbackTool {
   call_count: string;
   p50_ms: string | null;
   p95_ms: string | null;
-  avg_ms: string | null;
 }
 
 export interface EfficiencyFeedbackLatency {

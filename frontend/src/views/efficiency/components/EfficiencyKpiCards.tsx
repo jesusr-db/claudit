@@ -101,7 +101,7 @@ export default function EfficiencyKpiCards({ days }: Props) {
       <StatCard
         label="AI-Effective Yield"
         value={fmtCost(aey?.cost_per_accepted_decision)}
-        sub={`per accepted decision · ${parseInt(aey?.accepted_decisions ?? "0", 10).toLocaleString()} accepted`}
+        sub={`per accepted decision · ${parseInt(aey?.accepted_decisions ?? "0", 10).toLocaleString()} accepted · ${fmtCost(aey?.total_cost_usd)} total`}
         tooltip="In-session cost (USD) per tool decision the developer accepted. Lower = AI producing more accepted output per dollar spent. Labeled 'in-session' until git linkage is available."
       />
       <StatCard
@@ -114,7 +114,7 @@ export default function EfficiencyKpiCards({ days }: Props) {
       <StatCard
         label="Rework Ratio"
         value={reworkPct}
-        sub={`${parseInt(rework?.total_rework_writes ?? "0", 10).toLocaleString()} re-writes of ${parseInt(rework?.total_writes ?? "0", 10).toLocaleString()} total across ${parseInt(rework?.sessions_with_writes ?? "0", 10).toLocaleString()} sessions`}
+        sub={`${parseInt(rework?.total_rework_writes ?? "0", 10).toLocaleString()} re-writes of ${parseInt(rework?.total_writes ?? "0", 10).toLocaleString()} total across ${parseInt(rework?.sessions_with_writes ?? "0", 10).toLocaleString()} sessions · global ${((parseFloat(rework?.overall_rework_ratio ?? "0")) * 100).toFixed(1)}%`}
         tooltip="Fraction of file edit/write operations that target a file already edited in the same session. High rework = AI produced output that needed correction."
       />
     </HStack>
