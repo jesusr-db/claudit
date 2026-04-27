@@ -94,8 +94,11 @@ try:
 except Exception:
     pass  # No active update
 
-print(f"Triggering pipeline {pipeline_id} (full refresh)...")
-update = w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=True)
+# Use INCREMENTAL refresh (not full_refresh) — full_refresh nukes all MV tables and forces
+# every dependent synced table to re-snapshot from scratch, taking a working setup back to
+# PROVISIONING state. Incremental update applies new rows only and leaves synced tables ONLINE.
+print(f"Triggering pipeline {pipeline_id} (incremental refresh)...")
+update = w.pipelines.start_update(pipeline_id=pipeline_id, full_refresh=False)
 update_id = update.update_id
 print(f"  Update started: {update_id}")
 
@@ -156,13 +159,31 @@ for defn in SYNCED_TABLE_DEFS:
     tbl_name = defn["name"]
     synced_table_names.append(tbl_name)
 
-    # Check if already exists
+    # Check if already exists — if so, skip; if in a broken state, delete and recreate
     try:
         existing = w.database.get_synced_database_table(tbl_name)
-        print(f"  - {tbl_name} already exists (skipping)")
-        continue
-    except Exception:
-        pass  # Does not exist, create it
+        state = getattr(existing.data_synchronization_status, "detailed_state", None)
+        state_str = state.value if state else "UNKNOWN"
+        if state_str.startswith("SYNCED_TABLE_ONLINE"):
+            print(f"  - {tbl_name} already ONLINE (skipping)")
+            continue
+        # Exists but not online (orphaned/failed) — delete and recreate
+        print(f"  - {tbl_name} exists in state {state_str}, deleting to recreate...")
+        w.database.delete_synced_database_table(tbl_name)
+        import time as _time; _time.sleep(5)
+    except Exception as e:
+        if "does not exist" in str(e).lower() or "not found" in str(e).lower():
+            pass  # Does not exist, create it
+        elif "AlreadyExists" in str(type(e).__name__) or "already exists" in str(e).lower():
+            # UC metadata exists but get failed — delete and recreate
+            print(f"  - {tbl_name} in unknown state, attempting delete + recreate...")
+            try:
+                w.database.delete_synced_database_table(tbl_name)
+                import time as _time; _time.sleep(5)
+            except Exception:
+                pass
+        else:
+            pass  # Unknown error on get — attempt creation anyway
 
     try:
         w.database.create_synced_database_table(
@@ -183,8 +204,11 @@ for defn in SYNCED_TABLE_DEFS:
         )
         print(f"  ✓ Created synced table: {tbl_name}")
     except Exception as e:
-        print(f"  ✗ Failed to create {tbl_name}: {e}")
-        raise
+        if "already exists" in str(e).lower():
+            print(f"  - {tbl_name} already exists (concurrent creation), continuing...")
+        else:
+            print(f"  ✗ Failed to create {tbl_name}: {e}")
+            raise
 
 # COMMAND ----------
 # MAGIC %md
@@ -192,7 +216,6 @@ for defn in SYNCED_TABLE_DEFS:
 # MAGIC Synced tables start OFFLINE. The internal DLT sync pipeline must run to populate them in PG.
 
 # COMMAND ----------
-SYNC_TIMEOUT = 300  # 5 minutes
 POLL_INTERVAL = 15
 start = time.time()
 
@@ -216,23 +239,13 @@ def _is_table_online(table_info) -> tuple:
     return False, "UNKNOWN"
 
 
-# Trigger sync pipeline refresh on any discovered synced table
-for name in synced_table_names:
-    try:
-        st = w.database.get_synced_database_table(name)
-        if st.data_synchronization_status and st.data_synchronization_status.pipeline_id:
-            sync_pipeline_id = st.data_synchronization_status.pipeline_id
-            print(f"Triggering synced table pipeline {sync_pipeline_id}...")
-            w.pipelines.start_update(pipeline_id=sync_pipeline_id, full_refresh=True)
-            break
-    except Exception:
-        pass
+# NOTE: do NOT manually trigger synced table pipelines here. create_synced_database_table()
+# already auto-starts the sync — calling start_update(full_refresh=True) on top stops the
+# in-progress snapshot and restarts it, which can drop a partially-snapshotted large table
+# into OFFLINE_FAILED. Just let them sync.
 
 while True:
     elapsed = time.time() - start
-    if elapsed > SYNC_TIMEOUT:
-        raise TimeoutError(f"Synced tables did not come ONLINE within {SYNC_TIMEOUT}s")
-
     statuses = {}
     for name in synced_table_names:
         try:
@@ -255,8 +268,10 @@ while True:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 5: Create PG Views with JSONB Casts
-# MAGIC Synced tables store JSON as TEXT. Views cast to JSONB for `->>'key'` operator support.
+# MAGIC ## Step 5: Create Indexes on Pre-Shaped Synced Tables
+# MAGIC All MVs in the SDP pipeline pre-extract attribute keys into typed columns,
+# MAGIC so the synced PG tables are consumed directly by the app — no PG views, no
+# MAGIC TEXT→JSONB casts. We just need indexes for fast query performance.
 
 # COMMAND ----------
 # Refresh token before PG operations
@@ -266,64 +281,6 @@ cred = w.database.generate_database_credential(
 )
 token = cred.token
 
-VIEWS = {
-    "otel_logs": {
-        "source": "otel_logs_pg_synced",
-        "jsonb_cols": ["attributes", "resource_attributes"],
-    },
-    "otel_metrics": {
-        "source": "otel_metrics_pg_synced",
-        "jsonb_cols": ["sum_attributes", "histogram_attributes", "gauge_attributes", "resource_attributes"],
-    },
-    "otel_spans": {
-        "source": "otel_spans_pg_synced",
-        "jsonb_cols": ["attributes", "status", "events", "links", "resource_attributes"],
-    },
-}
-
-for view_name, spec in VIEWS.items():
-    source = spec["source"]
-    jsonb_cols = set(spec["jsonb_cols"])
-
-    # Get column list from source table
-    try:
-        col_rows = []
-        conninfo = f"host={instance.read_write_dns} port=5432 dbname={database_name} user={email} password={token} sslmode=require"
-        with psycopg.connect(conninfo) as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_schema = 'zerobus_sdp' AND table_name = '{source}'
-                    ORDER BY ordinal_position
-                """)
-                col_rows = [r[0] for r in cur.fetchall()]
-
-        if not col_rows:
-            print(f"  ⚠ Source {source} has no columns — skipping view")
-            continue
-
-        # Build SELECT with casts
-        select_parts = []
-        for col in col_rows:
-            if col in jsonb_cols:
-                select_parts.append(f"{col}::jsonb AS {col}")
-            else:
-                select_parts.append(col)
-
-        select_clause = ", ".join(select_parts)
-        ddl = f"CREATE OR REPLACE VIEW zerobus_sdp.{view_name} AS SELECT {select_clause} FROM zerobus_sdp.{source};"
-        run_pg(ddl, dbname=database_name)
-        print(f"  ✓ View zerobus_sdp.{view_name} created")
-    except Exception as e:
-        print(f"  ✗ View {view_name} failed: {e}")
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 5b: Create Indexes on Pre-Shaped Synced Tables
-# MAGIC The cc_logs_synced and cc_spans_synced tables arrive pre-shaped from the SDP pipeline.
-# MAGIC We just need indexes for fast query performance.
-
-# COMMAND ----------
 CC_LOGS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_cc_logs_svc_evt_ts ON zerobus_sdp.cc_logs_synced (service_name, event_name, event_ts);",
     "CREATE INDEX IF NOT EXISTS idx_cc_logs_session ON zerobus_sdp.cc_logs_synced (session_id);",
@@ -341,15 +298,43 @@ CC_SPANS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_cc_spans_trace_span ON zerobus_sdp.cc_spans_synced (trace_id, span_id);",
 ]
 
+OTEL_LOGS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_otel_logs_svc_time ON zerobus_sdp.otel_logs_pg_synced (service_name, time_unix_nano);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_logs_trace_span ON zerobus_sdp.otel_logs_pg_synced (trace_id, span_id);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_logs_session ON zerobus_sdp.otel_logs_pg_synced (session_id);",
+]
+
+OTEL_SPANS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_otel_spans_svc_kind ON zerobus_sdp.otel_spans_pg_synced (service_name, kind);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_spans_name ON zerobus_sdp.otel_spans_pg_synced (name);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_spans_trace_span ON zerobus_sdp.otel_spans_pg_synced (trace_id, span_id);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_spans_start ON zerobus_sdp.otel_spans_pg_synced (start_time_unix_nano);",
+]
+
+OTEL_METRICS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_otel_metrics_name ON zerobus_sdp.otel_metrics_pg_synced (name);",
+    "CREATE INDEX IF NOT EXISTS idx_otel_metrics_svc_name ON zerobus_sdp.otel_metrics_pg_synced (service_name, name);",
+]
+
+ALL_INDEXES = [
+    ("cc_logs_synced", CC_LOGS_INDEXES),
+    ("cc_spans_synced", CC_SPANS_INDEXES),
+    ("otel_logs_pg_synced", OTEL_LOGS_INDEXES),
+    ("otel_spans_pg_synced", OTEL_SPANS_INDEXES),
+    ("otel_metrics_pg_synced", OTEL_METRICS_INDEXES),
+]
+
 try:
     conninfo = f"host={instance.read_write_dns} port=5432 dbname={database_name} user={email} password={token} sslmode=require"
     with psycopg.connect(conninfo, autocommit=True) as conn:
-        for idx_ddl in CC_LOGS_INDEXES:
-            conn.execute(idx_ddl)
-        print(f"  ✓ {len(CC_LOGS_INDEXES)} indexes created on cc_logs_synced")
-        for idx_ddl in CC_SPANS_INDEXES:
-            conn.execute(idx_ddl)
-        print(f"  ✓ {len(CC_SPANS_INDEXES)} indexes created on cc_spans_synced")
+        for tbl, idx_list in ALL_INDEXES:
+            for idx_ddl in idx_list:
+                try:
+                    conn.execute(idx_ddl)
+                except Exception as inner_exc:
+                    # Don't abort the whole step on a single missing column / wrong shape.
+                    print(f"    - skip on {tbl}: {inner_exc}")
+            print(f"  ✓ {len(idx_list)} indexes ensured on {tbl}")
 except Exception as e:
     print(f"  ✗ Index creation failed: {e}")
 
@@ -366,6 +351,16 @@ for mv in LEGACY_MAT_VIEWS:
         print(f"  ✓ Dropped legacy mat view: {mv}")
     except Exception as e:
         print(f"  - {mv}: {e}")
+
+# Drop the JSONB-cast views from the previous architecture — the synced tables
+# now expose typed columns directly so these views serve no purpose.
+LEGACY_PG_VIEWS = ["otel_logs", "otel_metrics", "otel_spans"]
+for v in LEGACY_PG_VIEWS:
+    try:
+        run_pg(f"DROP VIEW IF EXISTS zerobus_sdp.{v} CASCADE;", dbname=database_name)
+        print(f"  ✓ Dropped legacy view: {v}")
+    except Exception as e:
+        print(f"  - {v}: {e}")
 
 # COMMAND ----------
 # MAGIC %md

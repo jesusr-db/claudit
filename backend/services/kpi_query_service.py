@@ -383,46 +383,45 @@ class KpiQueryService:
     # ── Phase 3: Flow Correlation ──
 
     def build_e2e_flow_summary(self, days: int = 30) -> str:
-        """Spans query — still uses JSONB view (spans table has 0 rows currently)."""
+        """Spans query — uses typed columns from the synced table directly (no JSONB view)."""
         return f"""
             WITH tool_spans AS (
                 SELECT
-                    resource_attributes->>'service.name' as server_name,
+                    service_name as server_name,
                     name as tool_name,
                     COUNT(*) as tool_calls,
                     ROUND(AVG((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as avg_duration_ms,
-                    SUM(CASE WHEN status->>'code' IS NULL OR status->>'code' != 'ERROR' THEN 1 ELSE 0 END) as success_count,
-                    SUM(CASE WHEN status->>'code' = 'ERROR' THEN 1 ELSE 0 END) as error_count
+                    SUM(CASE WHEN status_code IS NULL OR status_code != 'ERROR' THEN 1 ELSE 0 END) as success_count,
+                    SUM(CASE WHEN status_code = 'ERROR' THEN 1 ELSE 0 END) as error_count
                 FROM {self.spans_table}
                 WHERE kind = 'SPAN_KIND_INTERNAL'
                   AND name LIKE 'mcp.tool.%'
-                GROUP BY resource_attributes->>'service.name', name
+                GROUP BY service_name, name
             ),
             http_connections AS (
                 SELECT
-                    resource_attributes->>'service.name' as server_name,
-                    (regexp_match(attributes->>'http.url', '/mcp/external/([^/?]+)'))[1] as connection_name,
+                    service_name as server_name,
+                    (regexp_match(http_url, '/mcp/external/([^/?]+)'))[1] as connection_name,
                     COUNT(*) as http_calls,
                     ROUND(AVG((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as avg_http_duration_ms,
-                    SUM(CASE WHEN (attributes->>'http.status_code')::int >= 400 THEN 1 ELSE 0 END) as http_errors
+                    SUM(CASE WHEN http_status_code >= 400 THEN 1 ELSE 0 END) as http_errors
                 FROM {self.spans_table}
                 WHERE kind = 'SPAN_KIND_CLIENT'
-                  AND attributes->>'http.url' LIKE '%/mcp/external/%'
-                GROUP BY resource_attributes->>'service.name',
-                         (regexp_match(attributes->>'http.url', '/mcp/external/([^/?]+)'))[1]
+                  AND http_url LIKE '%/mcp/external/%'
+                GROUP BY service_name,
+                         (regexp_match(http_url, '/mcp/external/([^/?]+)'))[1]
             ),
             other_http AS (
                 SELECT
-                    resource_attributes->>'service.name' as server_name,
-                    (regexp_match(attributes->>'http.url', '^(https?://[^/]+)'))[1] as domain,
+                    service_name as server_name,
+                    http_domain as domain,
                     COUNT(*) as http_calls,
                     ROUND(AVG((end_time_unix_nano - start_time_unix_nano) / 1e6)::numeric, 1) as avg_http_duration_ms
                 FROM {self.spans_table}
                 WHERE kind = 'SPAN_KIND_CLIENT'
-                  AND attributes->>'http.url' NOT LIKE '%/mcp/external/%'
-                  AND attributes->>'http.url' IS NOT NULL
-                GROUP BY resource_attributes->>'service.name',
-                         (regexp_match(attributes->>'http.url', '^(https?://[^/]+)'))[1]
+                  AND http_url NOT LIKE '%/mcp/external/%'
+                  AND http_url IS NOT NULL
+                GROUP BY service_name, http_domain
             )
             SELECT
                 'tool' as section, ts.server_name, ts.tool_name as name,

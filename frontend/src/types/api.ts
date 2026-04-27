@@ -526,3 +526,49 @@ export interface GatewayTokenConsumptionData {
   top_models: { model: string; tokens: string }[];
   top_users: { requester: string; tokens: string }[];
 }
+
+// ── Developer Efficiency types ──
+
+export interface EfficiencyAey {
+  total_cost_usd: string | null;
+  accepted_decisions: string | null;
+  cost_per_accepted_decision: string | null;
+}
+
+export interface EfficiencyCognitiveLoad {
+  avg_tools_per_prompt: string | null;
+  avg_context_thrash: string | null;
+  avg_reject_rate: string | null;
+  cognitive_load_index: string | null;
+}
+
+export interface EfficiencyFeedbackTool {
+  tool_name: string;
+  call_count: string;
+  p50_ms: string | null;
+  p95_ms: string | null;
+}
+
+export interface EfficiencyFeedbackLatency {
+  tools: EfficiencyFeedbackTool[];
+  days: number;
+}
+
+export interface EfficiencyConvergencePoint {
+  date: string;
+  avg_convergence_score: string | null;
+  session_count: string;
+}
+
+export interface EfficiencyHarnessConvergence {
+  trend: EfficiencyConvergencePoint[];
+  days: number;
+}
+
+export interface EfficiencyReworkRatio {
+  avg_rework_ratio: string | null;
+  overall_rework_ratio: string | null;
+  total_rework_writes: string | null;
+  total_writes: string | null;
+  sessions_with_writes: string | null;
+}

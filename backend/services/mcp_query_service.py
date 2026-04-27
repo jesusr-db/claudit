@@ -31,11 +31,11 @@ class McpQueryService:
         return ""
 
     def _server_filter_logs(self, server: Optional[str]) -> str:
-        """Server filter for logs table (still uses JSONB view).
+        """Server filter for logs synced table (typed `service_name` column from MV).
         Always filters to claude-code when no specific server is given."""
         if server:
-            return f"AND resource_attributes->>'service.name' = '{server}'"
-        return "AND resource_attributes->>'service.name' = 'claude-code'"
+            return f"AND service_name = '{server}'"
+        return "AND service_name = 'claude-code'"
 
     @staticmethod
     def _time_filter_spans(days: Optional[float]) -> str:
@@ -108,11 +108,11 @@ class McpQueryService:
             ),
             log_counts AS (
                 SELECT
-                    resource_attributes->>'service.name' as service_name,
+                    service_name,
                     COUNT(*) as total_log_entries
                 FROM {self.logs_table}
                 WHERE 1=1 {sf_logs} {tf_logs}
-                GROUP BY resource_attributes->>'service.name'
+                GROUP BY service_name
             )
             SELECT
                 a.service_name,
@@ -190,27 +190,27 @@ class McpQueryService:
     # ── Server Detail (expandable) ──
 
     def build_server_detail(self, server: Optional[str] = None, days: Optional[float] = None) -> str:
-        """Per-tool metrics from mcp.tool.calls counter and mcp.tool.latency histogram."""
-        # Metrics table still uses JSONB (acceptable — small table)
+        """Per-tool metrics from mcp.tool.calls counter and mcp.tool.latency histogram.
+        Uses typed columns directly from the synced metrics table — no JSONB casting."""
         if server:
-            server_filter_metrics = f"AND resource_attributes->>'service.name' = '{server}'"
+            server_filter_metrics = f"AND service_name = '{server}'"
         else:
-            server_filter_metrics = "AND resource_attributes->>'service.name' = 'claude-code'"
+            server_filter_metrics = "AND service_name = 'claude-code'"
         return f"""
             WITH tool_calls AS (
                 SELECT
-                    sum_attributes->>'tool' as tool_name,
-                    sum_attributes->>'status' as call_status,
+                    sum_tool as tool_name,
+                    sum_status as call_status,
                     SUM((sum_value)::double precision) as total_calls
                 FROM {self.metrics_table}
                 WHERE name = 'mcp.tool.calls'
                   {server_filter_metrics}
                   {self._time_filter_metrics(days)}
-                GROUP BY sum_attributes->>'tool', sum_attributes->>'status'
+                GROUP BY sum_tool, sum_status
             ),
             tool_latency AS (
                 SELECT
-                    histogram_attributes->>'tool' as tool_name,
+                    hist_tool as tool_name,
                     SUM(histogram_count) as latency_samples,
                     ROUND((SUM(histogram_sum) / NULLIF(SUM(histogram_count), 0))::numeric, 1) as avg_latency_ms,
                     ROUND(MIN(histogram_min)::numeric, 1) as min_latency_ms,
@@ -219,12 +219,12 @@ class McpQueryService:
                 WHERE name = 'mcp.tool.latency'
                   {server_filter_metrics}
                   {self._time_filter_metrics(days)}
-                GROUP BY histogram_attributes->>'tool'
+                GROUP BY hist_tool
             ),
             http_duration AS (
                 SELECT
-                    histogram_attributes->>'http.method' as method,
-                    histogram_attributes->>'http.status_code' as status_code,
+                    hist_http_method as method,
+                    hist_http_status_code as status_code,
                     SUM(histogram_count) as http_samples,
                     ROUND((SUM(histogram_sum) / NULLIF(SUM(histogram_count), 0))::numeric, 1) as avg_http_ms,
                     ROUND(MIN(histogram_min)::numeric, 1) as min_http_ms,
@@ -233,7 +233,7 @@ class McpQueryService:
                 WHERE name = 'http.client.duration'
                   {server_filter_metrics}
                   {self._time_filter_metrics(days)}
-                GROUP BY histogram_attributes->>'http.method', histogram_attributes->>'http.status_code'
+                GROUP BY hist_http_method, hist_http_status_code
             )
             SELECT 'tool_calls' as section, tc.tool_name, tc.call_status,
                    (tc.total_calls)::text as value1,
@@ -329,7 +329,7 @@ class McpQueryService:
     def build_server_logs(
         self, server: Optional[str] = None, limit: int = 200, days: Optional[float] = None
     ) -> str:
-        """All log records with tool_name from nearest span. Logs side still uses JSONB view."""
+        """All log records with tool_name from nearest span. Reads typed columns directly."""
         sf_logs = self._server_filter_logs(server)
         return f"""
             WITH raw_logs AS (
@@ -337,7 +337,19 @@ class McpQueryService:
                     to_char(to_timestamp(time_unix_nano::bigint / 1000000000.0), 'YYYY-MM-DD HH24:MI:SS') as timestamp,
                     severity_text as severity,
                     body as body,
-                    attributes::text as attributes,
+                    -- Surface the per-row extracted attribute keys we have available.
+                    -- Raw `attributes` map was dropped from the MV; assemble a small JSON
+                    -- object so the existing UI cell still renders something useful.
+                    json_strip_nulls(json_build_object(
+                        'session.id', session_id,
+                        'model', model,
+                        'tool', tool_name,
+                        'type', attr_type,
+                        'status', attr_status,
+                        'http.method', http_method,
+                        'http.status_code', http_status_code,
+                        'http.url', http_url
+                    ))::text as attributes,
                     trace_id,
                     span_id
                 FROM {self.logs_table}

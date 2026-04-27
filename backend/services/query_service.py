@@ -239,15 +239,15 @@ class QueryService:
     ) -> str:
         conditions = ["name = 'claude_code.token.usage'"]
         if session_id:
-            conditions.append(f"sum_attributes->>'session.id' = '{session_id}'")
+            conditions.append(f"sum_session_id = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                sum_attributes->>'session.id' as session_id,
-                sum_attributes->>'model' as model,
-                sum_attributes->>'type' as token_type,
+                sum_session_id as session_id,
+                sum_model as model,
+                sum_type as token_type,
                 sum_value as value,
                 sum_start_time_unix_nano,
                 sum_time_unix_nano
@@ -262,14 +262,14 @@ class QueryService:
     ) -> str:
         conditions = ["name = 'claude_code.cost.usage'"]
         if session_id:
-            conditions.append(f"sum_attributes->>'session.id' = '{session_id}'")
+            conditions.append(f"sum_session_id = '{session_id}'")
 
         where = "WHERE " + " AND ".join(conditions)
 
         return f"""
             SELECT
-                sum_attributes->>'session.id' as session_id,
-                sum_attributes->>'model' as model,
+                sum_session_id as session_id,
+                sum_model as model,
                 sum_value as cost_usd,
                 sum_start_time_unix_nano,
                 sum_time_unix_nano

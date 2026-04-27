@@ -14,11 +14,13 @@ class Settings(BaseSettings):
     lakebase_instance_name: str = "claudit-db"
     lakebase_database: str = "claudit"
 
-    # PG table names (schema-qualified — used by PgExecutor against Lakebase Provisioned)
-    # These are views over synced tables that cast TEXT→JSONB for ->>'key' operator support
+    # PG table names (schema-qualified — used by PgExecutor against Lakebase Provisioned).
+    # These point DIRECTLY at synced tables (no PG views). Source MVs in the SDP pipeline
+    # already pre-extract attribute keys into typed columns so the app reads them
+    # directly without TEXT→JSONB casts.
     @property
     def otel_logs_table(self) -> str:
-        return "zerobus_sdp.otel_logs"
+        return "zerobus_sdp.otel_logs_pg_synced"
 
     @property
     def kpi_logs_mat_table(self) -> str:
@@ -37,19 +39,19 @@ class Settings(BaseSettings):
 
     @property
     def otel_metrics_table(self) -> str:
-        return "zerobus_sdp.otel_metrics"
+        return "zerobus_sdp.otel_metrics_pg_synced"
 
     @property
     def mcp_otel_spans_table(self) -> str:
-        return "zerobus_sdp.otel_spans"
+        return "zerobus_sdp.otel_spans_pg_synced"
 
     @property
     def mcp_otel_logs_table(self) -> str:
-        return "zerobus_sdp.otel_logs"  # Same source — MCP data is in same logs table
+        return "zerobus_sdp.otel_logs_pg_synced"  # Same source — MCP data is in same logs table
 
     @property
     def mcp_otel_metrics_table(self) -> str:
-        return "zerobus_sdp.otel_metrics"  # Same source — MCP data is in same metrics table
+        return "zerobus_sdp.otel_metrics_pg_synced"  # Same source — MCP data is in same metrics table
 
     # System table properties (catalog-qualified, used by SqlExecutor via SQL Warehouse)
     @property

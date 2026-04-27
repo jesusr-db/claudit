@@ -48,6 +48,11 @@ import type {
   GatewayUsageData,
   GatewayCodingAgentsData,
   GatewayTokenConsumptionData,
+  EfficiencyAey,
+  EfficiencyCognitiveLoad,
+  EfficiencyFeedbackLatency,
+  EfficiencyHarnessConvergence,
+  EfficiencyReworkRatio,
 } from "@/types/api";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -494,5 +499,42 @@ export function useActivityClassification(days = 30) {
   return useQuery<{ activities: ActivityClassification[]; days: number }>({
     queryKey: ["kpis", "activity", { days }],
     queryFn: () => fetchJson(`/api/v1/kpis/activity?days=${days}`),
+  });
+}
+
+// ── Developer Efficiency hooks ──
+
+export function useEfficiencyAey(days: number) {
+  return useQuery<EfficiencyAey>({
+    queryKey: ["efficiency", "aey", { days }],
+    queryFn: () => fetchJson(`/api/v1/efficiency/aey?days=${days}`),
+  });
+}
+
+export function useEfficiencyCognitiveLoad(days: number) {
+  return useQuery<EfficiencyCognitiveLoad>({
+    queryKey: ["efficiency", "cognitive-load", { days }],
+    queryFn: () => fetchJson(`/api/v1/efficiency/cognitive-load?days=${days}`),
+  });
+}
+
+export function useEfficiencyFeedbackLatency(days: number) {
+  return useQuery<EfficiencyFeedbackLatency>({
+    queryKey: ["efficiency", "feedback-latency", { days }],
+    queryFn: () => fetchJson(`/api/v1/efficiency/feedback-latency?days=${days}`),
+  });
+}
+
+export function useEfficiencyHarnessConvergence(days: number) {
+  return useQuery<EfficiencyHarnessConvergence>({
+    queryKey: ["efficiency", "harness-convergence", { days }],
+    queryFn: () => fetchJson(`/api/v1/efficiency/harness-convergence?days=${days}`),
+  });
+}
+
+export function useEfficiencyReworkRatio(days: number) {
+  return useQuery<EfficiencyReworkRatio>({
+    queryKey: ["efficiency", "rework-ratio", { days }],
+    queryFn: () => fetchJson(`/api/v1/efficiency/rework-ratio?days=${days}`),
   });
 }
