@@ -28,6 +28,13 @@
 ## Deployment Rules
 - **All assets supporting the Claudit app MUST be deployable through Databricks Asset Bundles (DAB).** Do not create bespoke artifacts directly via the API — unless it's strictly for testing purposes.
 
+## Data Architecture Rules
+- **Shape data in the Delta MV, never in Lakebase.** All transformations (attribute extraction, type casts, filters, dedup, JSON-to-typed-column conversion) happen in the SDP pipeline (`src/pipelines/lakebase_sync/*.sql`). The synced PG table is consumed directly by the app.
+- **No PG materialized views.** Do not `CREATE MATERIALIZED VIEW` in Lakebase. Refresh cycles, staleness, and ownership become hard to reason about; the SDP pipeline already gives us a refresh cadence.
+- **No PG views over synced tables for JSONB casting.** If the app needs to read a JSON field as JSONB or as a typed column, extract it in the Delta MV (e.g., `attributes['session.id'] AS session_id`, `CAST(attributes['cost_usd'] AS DOUBLE)`). The synced table should already be in the shape the app reads.
+- **App reads typed columns, not `attributes->>'key'` syntax.** If you find yourself writing `->>'something'` in a query, the right fix is to add `something` as a typed column to the source MV in `src/pipelines/lakebase_sync/`, redeploy, and refresh — not to add a PG view that does the cast.
+- **Pipeline change → recreate the synced table.** When a Delta MV's schema changes, the existing synced table will fail (schema mismatch). Drop it via `databricks database delete-synced-database-table` AND drop the orphaned PG table (`DROP TABLE zerobus_sdp.<name>`) before re-running setup, or the next create will fail with "Destination table already exists."
+
 ## Context Management
 - Use subagents for exploratory reads (3+ files), test runs, and search operations
 - Keep edits and decision-making in the main conversation
